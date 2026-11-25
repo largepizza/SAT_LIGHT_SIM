@@ -3411,13 +3411,87 @@ void SatelliteSim::kesslerFillDust(float pixelAngle)
         a = 2.0 * (std::cos(nt) - 1.0) / nm;
         b = 4.0 * std::sin(nt) / nm - 3.0 * tt;
     };
+    // ── The collision's direction (2026-11-24, issue_20261124_193940 "Sat collision dust": "Dust explodes in a
+    // spherical shape ... modelling the direction and energy vector of the collision") ──
+    // A hypervelocity collision does not throw its dust out evenly: each body's material runs on along the
+    // relative velocity. Most of a collision's dust is drawn as STREAMS along it (the share jetK), the rest (the
+    // contact zone's vapour, at the centre of mass) as the tube below, its isotropic kick capped at 0.25 vrel.
+    //  - A catastrophic pair collision: the two parents' debris, as the engine moves its records and small
+    //    population (Kessler.cpp planFragments / planSmall): each side keeps a share beta of its velocity relative
+    //    to the centre of mass (beta = 1 - 0.8 u^1.5: mean 0.68, sd 0.24), the projectile's side forward at
+    //    beta mT / M vrel, the target's backward at beta mP / M vrel, each side's light its mass share (so the
+    //    dust's momentum is the centre of mass's).
+    //  - A cratering hit, or a grid hit (one of the small fragments; the engine keeps no direction: the one
+    //    kesslerCollPair hashes from the seed): the target's ejecta, a forward spray along the projectile's travel
+    //    (the debris cloud of a penetration runs on, as behind a Whipple shield) and a weaker back-spray toward it,
+    //    faster with the specific energy.
+    // The spread angle narrows with the specific energy (ejecta 40 deg at 1/100 of the catastrophic 40 J/g, 15 deg at
+    // 100x it; a parent's own stream 30 -> 10 deg). Each stream is a chain of Gaussians along its speed distribution, every one placed by the
+    // Clohessy-Wiltshire map of its mean kick and covariance (exact for a Gaussian of kicks: CW is linear) and bent
+    // onto the arc as the tube's pieces are. The streams fade into the tube as they outgrow CW (their far end past
+    // 1500 -> 3000 km, and by 20 -> 30 min): the tube and the bands carry the cloud from there. Render only: the
+    // engine, its records and the cache are untouched (an explosion stays round: it has no direction).
+    struct Stream
+    {
+        double w, mean, sd, tanC;
+    };
+    struct DustJet
+    {
+        Stream st[2];
+        int n = 0;
+        double k = 0.0;     // the light in the streams (0 .. 0.75)
+        glm::dvec3 u{0.0};  // vrel's direction (radial, along-track, normal)
+        double sv = 0.0;    // the tube's kick speed (the core's)
+    };
+    auto dustJet = [&](const Cand &c) {
+        DustJet J;
+        const kessler::Event &e = kEvents[c.ev];
+        J.sv = std::clamp((double)e.dvSmall, 80.0, 500.0);
+        if (!kesslerDustJets || e.kind != kessler::EV_COLLISION || c.age >= 1800.0)
+            return J;
+        KCollVis cv;
+        if (!kesslerCollPair(c.ev, e, cv) || !(cv.vrel > 1.0) || glm::length(cv.vrelL) < 1e-6)
+            return J;
+        const double tA = std::max(c.age, 0.2);
+        J.u = cv.vrelL / glm::length(cv.vrelL);
+        const double Mt = cv.mT + cv.mP;
+        // J/kg (breakupCollision's: the smaller body's kinetic energy over the larger's mass)
+        const double emr = 0.5 * std::min(cv.mT, cv.mP) * cv.vrel * cv.vrel / std::max(std::max(cv.mT, cv.mP), 1e-3);
+        const double gE = std::clamp((std::log10(std::max(emr, 1.0) / 40000.0) + 2.0) / 4.0, 0.0, 1.0);
+        // The core's kicks are a fraction of the closing speed (the breakup model's sv is a hypervelocity one: a
+        // 0.9-km/s formation bump threw the "contact zone" out at 400 m/s, faster than its own streams).
+        const double svCore = std::min(J.sv, std::max(0.25 * cv.vrel, 40.0));
+        double k0;
+        if (e.catastrophic && !cv.grid && Mt > 0.0)
+        {
+            const double tanC = std::tan(glm::radians(glm::mix(30.0, 10.0, gE))); // each parent's own material
+            const double vB = cv.mT / Mt * cv.vrel, vA = cv.mP / Mt * cv.vrel;
+            J.st[J.n++] = {cv.mP / Mt, 0.68 * vB, 0.24 * vB, tanC};
+            J.st[J.n++] = {cv.mT / Mt, -0.68 * vA, 0.24 * vA, tanC};
+            k0 = 0.75;
+        }
+        else
+        {
+            const double tanC = std::tan(glm::radians(glm::mix(40.0, 15.0, gE))); // ejecta
+            const double sF = (1.5 + 2.5 * gE) * svCore, sB = (1.0 + 1.5 * gE) * svCore;
+            J.st[J.n++] = {0.45 / 0.65, sF, 0.4 * sF, tanC};
+            J.st[J.n++] = {0.20 / 0.65, -sB, 0.4 * sB, tanC};
+            k0 = 0.65;
+        }
+        double reach = 0.0;
+        for (int q = 0; q < J.n; ++q)
+            reach = std::max(reach, (std::abs(J.st[q].mean) + 2.0 * J.st[q].sd) * tA);
+        J.k = k0 * (1.0 - glm::smoothstep(1500.0e3, 3000.0e3, reach)) * (1.0 - glm::smoothstep(1200.0, 1800.0, tA));
+        J.sv = glm::mix(J.sv, svCore, J.k / k0); // (back to the model's as the streams hand over: no step)
+        return J;
+    };
     constexpr int kMinPieces = 15;
     auto plan = [&](const Cand &c) {
         Plan p;
         const kessler::Event &e = kEvents[c.ev];
         const double rm = glm::length(c.r);
         const double nm = std::sqrt(kessler::kGM / (rm * rm * rm));
-        const double sv = std::clamp((double)e.dvSmall, 80.0, 500.0);
+        const double sv = dustJet(c).sv;
         double a, b;
         cwParams(nm, std::max(c.age, 0.2), a, b);
         p.sy = sv * std::sqrt(a * a + b * b) + 30.0;
@@ -3473,7 +3547,8 @@ void SatelliteSim::kesslerFillDust(float pixelAngle)
                             std::sqrt(c.amp / std::max(c.pri, 1e-300)) / 1000.0, c.amp, cutK});
         const double rm = glm::length(c.r);
         const double nM = std::sqrt(kessler::kGM / (rm * rm * rm));
-        const double sv = std::clamp((double)e.dvSmall, 80.0, 500.0);
+        const DustJet J = dustJet(c);
+        const double sv = J.sv; // (a young collision's core: capped by its closing speed, dustJet)
         const double tA = std::max(c.age, 0.2); // (was 1 s: a breakup's cloud appeared ~sv wide at once)
         double ca, cb;
         cwParams(nM, tA, ca, cb);
@@ -3501,65 +3576,10 @@ void SatelliteSim::kesslerFillDust(float pixelAngle)
             const double h1 = kessler::hash01(e.seed, (uint64_t)(int64_t)(fl + 1.0), 71);
             return 0.55 + 0.9 * (h0 + (h1 - h0) * s); // mean ~1
         };
-        // ── The collision's direction (2026-11-24, issue_20261124_193940 "Sat collision dust": "Dust explodes in a
-        // spherical shape ... modelling the direction and energy vector of the collision") ──
-        // A hypervelocity collision does not throw its dust out evenly: each body's material runs on along the
-        // relative velocity. Most of a collision's dust is drawn as STREAMS along it (the share jetK), the rest (the
-        // contact zone's vapour, at the centre of mass) as the tube above with the small fragments' isotropic kick.
-        //  - A catastrophic pair collision: the two parents' debris, as the engine moves its records and small
-        //    population (Kessler.cpp planFragments / planSmall): each side keeps a share beta of its velocity relative
-        //    to the centre of mass (beta = 1 - 0.8 u^1.5: mean 0.68, sd 0.24), the projectile's side forward at
-        //    beta mT / M vrel, the target's backward at beta mP / M vrel, each side's light its mass share (so the
-        //    dust's momentum is the centre of mass's).
-        //  - A cratering hit, or a grid hit (one of the small fragments; the engine keeps no direction: the one
-        //    kesslerCollPair hashes from the seed): the target's ejecta, a forward spray along the projectile's travel
-        //    (the debris cloud of a penetration runs on, as behind a Whipple shield) and a weaker back-spray toward it,
-        //    faster with the specific energy.
-        // The spread angle narrows with the specific energy (40 deg at 1/100 of the catastrophic 40 J/g, 15 deg at
-        // 100x it). Each stream is a chain of Gaussians along its speed distribution, every one placed by the
-        // Clohessy-Wiltshire map of its mean kick and covariance (exact for a Gaussian of kicks: CW is linear) and bent
-        // onto the arc as the tube's pieces are. The streams fade into the tube as they outgrow CW (their far end past
-        // 1500 -> 3000 km, and by 20 -> 30 min): the tube and the bands carry the cloud from there. Render only: the
-        // engine, its records and the cache are untouched (an explosion stays round: it has no direction).
-        struct Stream
-        {
-            double w, mean, sd, tanC;
-        };
-        Stream streams[2];
-        int nStreams = 0;
-        double jetK = 0.0;
-        glm::dvec3 uL(0.0); // the relative velocity's direction in (radial, along-track, normal)
-        if (kesslerDustJets && e.kind == kessler::EV_COLLISION)
-        {
-            KCollVis cv;
-            if (kesslerCollPair(c.ev, e, cv) && cv.vrel > 1.0 && glm::length(cv.vrelL) > 1e-6)
-            {
-                uL = cv.vrelL / glm::length(cv.vrelL);
-                const double Mt = cv.mT + cv.mP;
-                const double emr = 0.5 * std::min(cv.mT, cv.mP) * cv.vrel * cv.vrel / std::max(std::max(cv.mT, cv.mP), 1e-3); // J/kg (breakupCollision)
-                const double gE = std::clamp((std::log10(std::max(emr, 1.0) / 40000.0) + 2.0) / 4.0, 0.0, 1.0);
-                const double tanC = std::tan(glm::radians(glm::mix(40.0, 15.0, gE)));
-                if (e.catastrophic && !cv.grid && Mt > 0.0)
-                {
-                    const double vB = cv.mT / Mt * cv.vrel, vA = cv.mP / Mt * cv.vrel;
-                    streams[nStreams++] = {cv.mP / Mt, 0.68 * vB, 0.24 * vB, tanC};
-                    streams[nStreams++] = {cv.mT / Mt, -0.68 * vA, 0.24 * vA, tanC};
-                    jetK = 0.75;
-                }
-                else
-                {
-                    const double sF = (1.5 + 2.5 * gE) * sv, sB = (1.0 + 1.5 * gE) * sv;
-                    streams[nStreams++] = {0.45 / 0.65, sF, 0.4 * sF, tanC};
-                    streams[nStreams++] = {0.20 / 0.65, -sB, 0.4 * sB, tanC};
-                    jetK = 0.65;
-                }
-                double reach = 0.0;
-                for (int s = 0; s < nStreams; ++s)
-                    reach = std::max(reach, (std::abs(streams[s].mean) + 2.0 * streams[s].sd) * tA);
-                jetK *= (1.0 - glm::smoothstep(1500.0e3, 3000.0e3, reach)) *
-                        (1.0 - glm::smoothstep(1200.0, 1800.0, tA));
-            }
-        }
+        const Stream *streams = J.st;
+        const int nStreams = J.n;
+        const double jetK = J.k;
+        const glm::dvec3 uL = J.u; // the relative velocity's direction in (radial, along-track, normal)
         // The cloud's second moments (harness `kessler state` -> dust.clouds: axis ratios, the major axis vs vrel)
         double momW = 0.0;
         glm::dvec3 mom1(0.0);
