@@ -139,10 +139,12 @@ jobs:
           path: dist/${{ steps.ver.outputs.archive }}.tar.gz
 
   # ── macOS (universal: arm64 + x86_64) ──────────────────────────────────────
-  # Pinned to macos-14 (not macos-latest) so a GitHub runner-image bump can't silently
-  # change the Xcode/SDK toolchain under this job between releases.
+  # Pinned to macos-15 (not macos-latest) so a GitHub runner-image bump can't silently
+  # change the Xcode/SDK toolchain under this job between releases. (It was macos-14 until
+  # 2026-11-25, when GitHub had retired that image: the job was cancelled before its first step
+  # with "The configuration 'macos-14-arm64-us-default' is not supported".)
   #
-  # macos-14 runners are Apple Silicon, so a default build produces an arm64-ONLY binary.
+  # macos-14/15 runners are Apple Silicon, so a default build produces an arm64-ONLY binary.
   # That is what made the first CI build die with "bad CPU type in executable" on an Intel
   # Mac: not a signing, quarantine or dylib problem, but the kernel refusing to exec a
   # Mach-O with no slice for the host architecture — it fails before any of this app's own
@@ -163,7 +165,7 @@ jobs:
   #      supported on this version of macOS" — a *different* error from the CPU-type one,
   #      and the one that would have surfaced next had the arch been right.
   build-macos:
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
 
