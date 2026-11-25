@@ -122,7 +122,7 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   pair's momentum (a head-on hit sends the cloud along the impactor's path instead of leaving it with the
   formation).
 - **The storm cripples the orbital mirrors.** Reflect Orbital's huge, light film sails cannot hold their attitude
-  against the storm-heated upper atmosphere: about four in five go out of control over the storm's first night.
+  against the storm-heated upper atmosphere: nineteen in twenty go out of control over the storm's first night.
   Their sites lose most of their beams (the arc of light over a site becomes a few scattered flares), the lost mirrors
   tumble and flash as loose glints, and drag brings them down within weeks.
 - **A collision's dust is no longer a round puff:** it streams out along the collision's relative velocity, each

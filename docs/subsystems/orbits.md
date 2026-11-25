@@ -538,10 +538,37 @@ azimuth / elevation from the site and the Sun's elevation there).
   27.78 +- 0.23 open, 3 reps, the window's own drawing included).
 - **The Watch** (one button per row, `reflectorSiteWatch`): 1x, the observer on the ground 15 km from the site,
   side-on to the mean beam (bearing = beam azimuth + 90 deg), looking at the air 1.5 km over the site, FOV >= 60.
-- **Under the Sun's Fury** (2026-11-24, issue_20261124_194453): the storm takes 80% of the site-aiming mirrors out of
-  control over its main phase (`kFuryMirrorLossP`, kessler.md "Reflect Orbital mirrors under the Fury"); a dead mirror
-  resolves no target (`usesSite` needs `!deadNow`), tumbles and is skipped by the census, so every site's beam count
-  falls to ~1/5 (Nuuk at the report's instant 75 vs 356 with the scenario off) and the sky keeps them as tumbling glints.
+- **Under the Sun's Fury** (2026-11-24, issue_20261124_194453; 95% since 2026-11-25): the storm takes 95% of the
+  site-aiming mirrors out of control over its main phase (`kFuryMirrorLossP`, kessler.md "Reflect Orbital mirrors under
+  the Fury"); a dead mirror resolves no target (`usesSite` needs `!deadNow`) and writes no ReflectBeam, so it has no
+  ground spot, no cloud light, no shaft and no light-volume beam, and the census skips it: every site's beam count falls
+  to ~1/20 (Nuuk at the report's instant 17 vs 356 with the scenario off) and the sky keeps the lost mirrors only as
+  tumbling glints (the flare photometry of their tumbling attitude).
+- **How a site's light scales with its mirrors.** One beam's ground irradiance, in Suns, is E = A F cos(i) lit /
+  (pi R^2), R = sqrt(A / pi) + slant x tan(0.2665 deg) (sat_orbit.comp `intensity` = 1361 A F cos(i) beamGain lit; every
+  consumer divides by 1361 beamGain, `cv2.beam.w`). The model mirror: A = 256.4 m^2 (the coplanar film lobe,
+  `crossSectionM2`), F ~0.92-0.95 (the `mirror` preset), so at 500 km slant and normal incidence R = 2.33 km and E =
+  1.4e-5 Suns (~19 mW/m^2, ~1.8 lx, ~8x a full Moon); at 1000 km slant R doubles and E quarters. Everything downstream
+  is LINEAR in the sum of the converged beams' E (each with its own cloud transmittance): the ground under the light
+  volume adds albedo x sum(E) x `cv2.beam.z` ("Beam light on cloud", 29) x (cos + 0.12) in day-colour units
+  (sat_sky.frag `bvGroundLight`), cloud light is the same sum x 29 x the droplet / HG phase at each beam's own angle,
+  and the shafts integrate the air's sum(E) x (Rayleigh + 1.6 x Mie) along the view (`cv2.beam.x`, `cv2.beam.y`). So a
+  site of N similar mirrors is N x one mirror's look: 356 converged at Nuuk ~5e-3 Suns (x29 on display: ~0.15 of the
+  daylight level), 17 ~2.4e-4. A site's rank for a light-volume box is sum(E) / (1 + (d / 150 km)^2); the sky-glow dome
+  takes the max of each beam's compressed term per sector, not the sum. Outside the 4 boxes the old ground spot (the
+  CPU-culled GroundBeamsBuf, 256 entries, `kBeamGroundScale` x weight x the disk) carries it, also linear.
+- **Proposal, not built: sun spots of tumbling mirrors (2026-11-25).** A tumbling sail's Sun image (the same 0.53-deg
+  cone, ~4.7 km across from 500 km, one mirror's E) sweeps the ground at 2 omega x slant: 10-800 km/s for its 40-600 s
+  tumble at 500-2500 km. About 30% of sunlit tumbling mirrors aim at the Earth at any instant. Within ~25 km of the eye
+  that is of order one spot every few seconds (4750 lost, ~half sunlit; a rough estimate), each ~0.1-0.5 s, a ~1.8-lx
+  flash crossing the land. Cheapest route: the CPU, which already mirrors the dead tumble (`kessler::deadTumble` /
+  `orbitElemsOf`), evaluates each lost mirror's film normal within the horizon (~2000 of 4750, ~0.1-0.3 ms), reflects
+  the Sun, intersects the Earth, keeps the hits within the ground list's range and appends them to GroundBeamsBuf after
+  the volume sites' sort as 'uncovered' entries (`pad1`), with no target (out of clusters, boxes and the census). The
+  shader loop is unchanged (bounded at 256; it costs only where a pixel is within 1.15 R of a spot). Evaluated at the
+  frame's own time, not from the 2-frame GPU readback (whose lag is 0.3-27 km at those speeds). No shafts or cloud light
+  for them (a 0.2-s, 1.4e-5-Sun flash). Estimate ~150-250 lines in SatelliteSim.cpp plus a harness count; half a day
+  with checks.
 
 ### Per-satellite selection (GPU, sat_orbit.comp) — deterministic lock windows
 Target IDENTITY is chosen per fixed-width **sim-time window**
