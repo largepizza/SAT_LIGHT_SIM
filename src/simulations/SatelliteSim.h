@@ -3218,7 +3218,7 @@ private:
     // bands of 2026-10-31 alone (0.5-4 h)
     bool kesslerDustRingsOn = true;
     float kesslerDustRingGain = 1.0f; // kessler.dust_ring_gain (no UI): the rings' brightness x this
-    float kesslerDustGain = 100.0f;    // kessler.dust_gain: the drawn dust clouds' brightness (x the physical estimate)
+    float kesslerDustGain = 1000.0f;    // kessler.dust_gain: the drawn dust clouds' brightness (x the physical estimate) (was 100.0, 2026-11-25 bake)
     float kesslerFireColor = 0.8f;     // kessler.fireball_colors: fragments tinted by material (0 = temperature only)
     float kesslerSmallReGain = 30.0f;  // kessler.small_reentry_gain: small fragments' fireballs (x physical: meteor-faint)
     struct KesslerWorker;             // the World + its thread (SatelliteSimKessler.cpp)
@@ -3744,7 +3744,7 @@ private:
     std::unique_ptr<LaunchState, LaunchStateDelete> launchState;
     bool launchesEnabled = true;     // launches.enabled
     float launchLifeScale = 1.0f;    // launches.life_scale: x every program's design life (fewer launches above 1)
-    float launchPlumeGain = 0.3f;    // launches.plume_gain: the plumes' optical depth x
+    float launchPlumeGain = 0.23f;    // launches.plume_gain: the plumes' optical depth x (was 0.3, 2026-11-25 bake)
     float launchRocketGain = 1.0f;   // launches.rocket_gain: the flames' brightness x
     // Exhaust tuning (2026-10-21, issue 20261021_175638: "sliders for exhaust plumes, I wanna test ranges"; Settings >
     // Launches). Defaults since 2026-10-30 are the tuned values in the user's settings.json (1 = the 2026-10-21 look).
@@ -3753,15 +3753,15 @@ private:
     float launchPlumeBright = 1.06334841f;  // launches.plume_brightness: the light the exhaust scatters x
     float launchPlumeWidth = 0.877828062f;  // launches.plume_width: every plume Gaussian's radius x (same mass: thinner wide)
     float launchPlumeBillows = 0.9909502f;  // launches.plume_billows: the billows' contrast x (cloud_march.comp)
-    float launchPlumeGrowth = 1.0f;         // launches.plume_growth: the low trail's / ground clouds' turbulent growth x
+    float launchPlumeGrowth = 0.43f;         // launches.plume_growth: the low trail's / ground clouds' turbulent growth x (was 1.0, 2026-11-25 bake)
     // The second stage's jellyfish (2026-10-30, issue 20261030_134020; Settings > Launches > ROCKETS AND EXHAUST,
     // slots 428-434, keys launches.jelly_*): streak count (0 = one per upper-stage engine), the streaks' brightness x,
     // spread x (their opening angle), sharp length (s of exhaust age before they diffuse), diffusion x (how fast they
     // widen and fade into the glow), the nucleus's brightness x, the hot-staging cloud x. Defaults since 2026-10-30 are
     // the tuned values in the user's settings.json: a long, wide jellyfish (55 s, 0.59 diffusion) under a 1.9 cloud.
-    float launchStreakCount = 0.0f, launchStreakBright = 1.0f, launchStreakSpread = 0.909502268f, launchStreakLengthS = 54.76923f;
+    float launchStreakCount = 0.0f, launchStreakBright = 1.0f, launchStreakSpread = 0.95f, launchStreakLengthS = 26.0f; // (was launchStreakLengthS 54.76923, launchStreakSpread 0.909502268, 2026-11-25 bake)
     float launchStreakDiffusion = 0.5882353f, launchNucleusBright = 1.040724f, launchStagingCloud = 1.90045261f;
-    float launchPlumeDispersal = 3.93665171f; // launches.plume_dispersal (2026-10-26): old exhaust's widening with age x (no UI)
+    float launchPlumeDispersal = 2.9f; // launches.plume_dispersal (2026-10-26): old exhaust's widening with age x (no UI) (was 3.93665171, 2026-11-25 bake)
     // launches.plume_cover_max (2026-11-16, plume overhaul phase 4; no UI): the plume budget's coverage, in screens of
     // dustCloudsCS's per-texel work, above which no Gaussians are added past the old 384 (SatelliteSimLaunches.cpp
     // launchFillVisuals); 0 = the old count budget alone
@@ -5823,7 +5823,7 @@ private:
     float cv2ColumnEdge = 0.5f;        // 1 / the column edge's softness (fraction of the span) (was 1.7, 2026-11-10 bake)
     float cv2AmbientGain = 1.5f;       // sky light (zenith radiance x this) (was 1.7, 2026-11-15 bake)
     float cv2SunGain = 1.0f;
-    float cv2MoonGain = 0.87f;          // x the terrain's moonlight (cloud.moonGain) as the night key light (was 1.0, 2026-11-10 bake)
+    float cv2MoonGain = 0.9f;          // x the terrain's moonlight (cloud.moonGain) as the night key light (was 1.0, 2026-11-10 bake) (was 0.87, 2026-11-25 bake)
     float cv2BounceGain = 1.8f;        // light reflected up from the ground (was 0.98, 2026-11-15 bake)
     float cv2Powder = 0.23f; // (was 0.21, 2026-11-10 bake)
     float cv2MsExtinction = 0.13f;     // multiple scattering: extinction ratio per octave ... (was 0.19, 2026-11-15 bake)
@@ -5846,9 +5846,9 @@ private:
     // Flashes per minute of an ORDINARY cell's full-strength (anvil-reaching) tower; 0 = off. x its storm's kind in the
     // lightning pass (kCv2KindRate: multicell 2, supercell 12, line systems 3, a cyclone's towers 0.35). 3.0 since
     // 2026-11-22 (it was 1.1 for every kind: a supercell flashed once a minute); weather.md "Lightning rates".
-    float cv2LightningRate = 3.0f;
+    float cv2LightningRate = 3.7f; // (was 3.0, 2026-11-25 bake)
     float cv2LightningGlow = 0.088f;      // the flash's light in the cloud
-    float cv2LightningBolt = 1.25f;        // the cloud-to-ground channels
+    float cv2LightningBolt = 1.4f;        // the cloud-to-ground channels (was 1.25, 2026-11-25 bake)
     float cv2LightningSprites = 0.013f;    // chance a ground stroke sets off a red sprite 50-90 km up (0 = never)
     float cv2EvoWindMps = 8.0f;           // the weather map's evolution: its advecting wind (m/s); 0 = static
     float cv2EvoGrowth = 0.043f;           // ... and how much its coverage grows and decays (0 = none) (was 0.12, 2026-11-10 bake)
@@ -5951,11 +5951,11 @@ private:
     float cv2StormUnifiedLobes = 1.0f;     // clouds_v2.storm_unified_lobes: x the storm lobes' strength
     // Storms in the cumulus look (2026-11-05, storm3; cv2AnvilFibre / cv2FieldLow): the anvil plate as fibrous spreading
     // ice, the towers carved by the cumulus bubbles.
-    float cv2AnvilFibres = 0.65f;           // "Anvil fibres" (clouds_v2.anvil_fibres; 0 = the eroded plate as before) (was 1.0, 2026-11-10 bake)
+    float cv2AnvilFibres = 0.67f;           // "Anvil fibres" (clouds_v2.anvil_fibres; 0 = the eroded plate as before) (was 1.0, 2026-11-10 bake) (was 0.65, 2026-11-25 bake)
     float cv2AnvilFibreAlongKm = 15.0f;    // clouds_v2.anvil_fibre_along_km: the fibres' along-wind period
     float cv2AnvilFibreAcrossM = 1500.0f;  // clouds_v2.anvil_fibre_across_m: their across-wind spacing
     float cv2StormBubbles = 0.5f;           // "Storm bubbles" (clouds_v2.storm_bubbles; 0 = off)
-    float cv2AnvilErosion = 0.23f;          // "Anvil erosion" (clouds_v2.anvil_erosion): the plate's share of the Cb erosion (was 0.2, 2026-11-10 bake)
+    float cv2AnvilErosion = 0.26f;          // "Anvil erosion" (clouds_v2.anvil_erosion): the plate's share of the Cb erosion (was 0.2, 2026-11-10 bake) (was 0.23, 2026-11-25 bake)
     float cv2AnvilLidLobes = 0.1f;         // clouds_v2.anvil_lid_lobes: the plate lid's share of the storm lobes
     float cv2AnvilUnderLobes = 0.7f;       // clouds_v2.anvil_under_lobes: the plate underside's share
     // clouds_v2.sun_volume_max_step_s: a JUMP of the clock past this many seconds restarts the Sun transmittance volume (a
@@ -6040,8 +6040,8 @@ private:
     float cv2CuHeapDepth = 0.8f;           // "Shallow cumulus depth" (slot 550): a shallow cell's extra depth at full share (T x (1 + this))
     float cv2CuCore = 0.49f;                // "Cumulus core": the envelope's interior the bubbles / turrets / lobes cannot carve (0 = off; clouds_v2.glsl "CUMULUS CORE") (was 0.5, 2026-11-10 bake)
     float cv2CuEnvTowers = 0.045f;          // "Cumulus tower spread": each cloud's top varies by a km-scale field, x(1 - k) .. x(1 + 0.8 k) (0 = off) (was 0.75, 2026-11-10 bake)
-    float cv2SilverLining = 0.76f;         // "Silver lining": forward-scattered sunlight leaking through thin cloud toward the Sun (was 0.5, 2026-11-10 bake)
-    float cv2SmallCumulus = 0.15f;        // the near field makes low puffs this far under the coverage threshold (field units) (was 0.06, 2026-11-10 bake)
+    float cv2SilverLining = 0.2f;         // "Silver lining": forward-scattered sunlight leaking through thin cloud toward the Sun (was 0.5, 2026-11-10 bake) (was 0.76, 2026-11-25 bake)
+    float cv2SmallCumulus = 0.0f;        // the near field makes low puffs this far under the coverage threshold (field units) (was 0.06, 2026-11-10 bake) (was 0.15, 2026-11-25 bake)
     float cv2ErosionVar = 0.37f;           // erosion strength and grain vary by region (0 = uniform) (was 0.6, 2026-11-10 bake)
     float cv2LobeVar = 0.29f;              // the lobes' strength varies by region (0 = uniform) (was 0.5, 2026-11-10 bake)
     float cv2CirrusDirWarp = 0.5f;        // the cirrus streaks' heading swings (their slope; 0 = along the flowed parallels)
@@ -6107,7 +6107,7 @@ private:
     float cv2MidAmount = 0.6f;         // the mid-level layer (altocumulus / altostratus), 0 = off (was 0.75, 2026-11-10 bake)
     float cv2StormScale = 30.0f;        // deep convection's lobes and erosion are this much larger (was 12.0, 2026-11-10 bake)
     float cv2StormDetail = 0.04f;       // share of the erosion kept on deep convection
-    float cv2Anvil = 0.35f;             // the anvil shield's density ("Anvils"), 0 = off. With storm objects each storm's (was 8.0, 2026-11-10 bake)
+    float cv2Anvil = 0.42f;             // the anvil shield's density ("Anvils"), 0 = off. With storm objects each storm's (was 8.0, 2026-11-10 bake) (was 0.35, 2026-11-25 bake)
                                        // shield (cv2ShieldAt, 2026-10-23): a puffy layer round the towers' flared heads
                                        // that outlives them. 8 with the user's anvil tune (thickness 3.7 km, hang,
                                        // puffiness, lift, lobes, waist, overshoot, storm erosion), 2026-10-23
@@ -6125,29 +6125,29 @@ private:
     float cv2CirrusFlowBlend = 0.15f;   // the share of a window each side of a renewal that cross-fades the two phases
     // 2026-11-08 (weather salvage, weather-v2's continuous storms): where the map types deep convection past congestus (a
     // hurricane's CDO) the cumulus field draws one storm mass (clouds_v2.glsl sK). clouds_v2.storm_mass, slot 548; 0 = off.
-    float cv2StormMass = 1.0f;
+    float cv2StormMass = 0.62f; // (was 1.0, 2026-11-25 bake)
     // 2026-11-08 (hurricane, issue_20261108_173906): the CDO sheet's spiral outline, frays and swirl ripple (clouds_v2.glsl
     // cv2CdoShare; clouds_v2.hurricane_sheet_swirl, slot 556) and the eyewall drawn by the storm mass, its ring of tower
     // objects faded out of the march (cv2LowA "THE EYEWALL"; clouds_v2.hurricane_eyewall, slot 557). 0 = off.
-    float cv2HurrSheetSwirl = 1.0f;
-    float cv2HurrEyewall = 1.0f;
+    float cv2HurrSheetSwirl = 0.67f; // (was 1.0, 2026-11-25 bake)
+    float cv2HurrEyewall = 0.56f; // (was 1.0, 2026-11-25 bake)
     // (2026-11-10, hurrshape; issues 20261109_184510 / 184650) a hurricane's low field: "Hurricane fill" (clouds_v2.hurricane_fill,
     // slot 600) = the storm mass's top as a smooth ramp rising to the CDO sheet at the eyewall, full overcast under it;
     // "Hurricane smoothing" (clouds_v2.hurricane_smoothing, slot 601) = less lobes / erosion / cut-through within the cyclone's
     // reach (cv2LowA "THE HURRICANE'S RAMP"). 0 = as before.
     float cv2HurrFill = 1.0f;
-    float cv2HurrSmooth = 0.7f;
+    float cv2HurrSmooth = 0.77f; // (was 0.7, 2026-11-25 bake)
     // 2026-11-11 (hurrlook, issue_20261111_165853): "Hurricane eye cloud" (clouds_v2.hurricane_eye_cloud, slot 608): the low
     // cloud on the eye's floor inside the eyewall's stadium (clouds_v2.glsl cv2LowA "THE EYE AS A BOWL"). 1 = as before (a
     // broken low deck in the eye, as many real eyes have), 0 = a clear eye, the sea showing; the wall is unchanged.
-    float cv2HurrEyeCloud = 1.0f;
+    float cv2HurrEyeCloud = 0.51f; // (was 1.0, 2026-11-25 bake)
     // 2026-11-10 (flowmaps, issue_20261109_184801): the cyclone flow map (clouds_v2.glsl cv2CycFlowAt; the resolve
     // reprojects it). Slots 560-563. hurricane_rotation: the cloud texture's angular rate as a share of the surface wind's
     // (vmax / rmw at the RMW; 0 = off); hurricane_flow_turns: the winding per flow-map window (turns; sets the window);
     // hurricane_flow_blend: the share of a window each side of a renewal that cross-fades the two phases.
     float cv2HurrRotation = 0.6f;
-    float cv2HurrFlowTurns = 0.25f;
-    float cv2HurrFlowBlend = 0.12f;
+    float cv2HurrFlowTurns = 0.93f; // (was 0.25, 2026-11-25 bake)
+    float cv2HurrFlowBlend = 0.11f; // (was 0.12, 2026-11-25 bake)
     std::unordered_map<uint32_t, double> cycFlowPhase;   // each active cyclone's flow-map clock (windows), by its seed
     float cv2FlowFadeS = 1.0f;   // the rotation's time-lapse fade (1 = full; toward 0 past a few degrees of turn a frame), smoothed
     // The vortices the flow map turns this frame (cyclones, then supercells' mesocyclones), Earth-fixed: the view-cap
@@ -6159,21 +6159,21 @@ private:
     struct TornadoSpin { double turns = 0.0, fade = 1.0, seen = 0.0; bool live = false; };
     std::unordered_map<uint64_t, TornadoSpin> tornadoSpin;
     double tornadoSpinPrevT = -1e300, tornadoSpinDt = 0.0;
-    float cv2RainAmount = 3.0f;         // rain shafts under precipitating cloud, 0 = none
-    float cv2OpticsGain = 1.0f;        // halos, sundogs, circumzenithal arc, rainbows
+    float cv2RainAmount = 1.0f;         // rain shafts under precipitating cloud, 0 = none (was 3.0, 2026-11-25 bake)
+    float cv2OpticsGain = 1.1f;        // halos, sundogs, circumzenithal arc, rainbows (was 1.0, 2026-11-25 bake)
     // (2026-11-10, optics) The ice halos from the traced crystal table (cv2_optics.glsl): 1 the table, 0 the analytic lobes;
     // the shares of singly oriented columns (tangent arcs) among a region's halo crystals and of Parry-oriented columns
     // (Parry arcs) among its well-aligned ones. clouds_v2.ice_optics_table / _columns / _parry, slots 584-586.
     float cv2IceOpticsTable = 1.0f;
-    float cv2IceOpticsColumns = 0.5f;
-    float cv2IceOpticsParry = 0.2f;
+    float cv2IceOpticsColumns = 0.33f; // (was 0.5, 2026-11-25 bake)
+    float cv2IceOpticsParry = 0.14f; // (was 0.2, 2026-11-25 bake)
     float cv2RainStreaks = 3.1f;       // the rain particles' visibility (x their real coverage; "Drops at the eye")
     float moveSpeedPerHeight = 1.0f;   // WASD: this many times the height above the ground per second (at every
                                        // height since 2026-11-21; was capped at 0.08 rad/s): slow near the surface
     float cv2DropDistM = 33.0f;        // the rain particles' reach (m; each doubling is one more level, at most 64)
     float cv2RainParticlesK = 16.0f;   // drops in the nearest box, thousands (each farther level holds twice as many)
     float cv2RainShutterMs = 33.0f;    // a drop's streak: how far it falls in this time (ms)
-    float cv2LightningStormRate = 1.0f;    // flashes / min per 20 x 20 km of a storm's deep cloud away from its towers (x its kind's share, kCv2KindArea; 0.53 until 2026-11-22, when no region flashed at all)
+    float cv2LightningStormRate = 3.0f;    // flashes / min per 20 x 20 km of a storm's deep cloud away from its towers (x its kind's share, kCv2KindArea; 0.53 until 2026-11-22, when no region flashed at all) (was 1.0, 2026-11-25 bake)
     // "Cloud-to-ground share" (clouds_v2.lightning_cg_share, slot 629, 2026-11-22): the share of an ordinary storm's
     // flashes that reach the ground (x 0.4 in a supercell: cloud_v2_lightning.comp kCv2KindCg); cv2.misc2.y.
     float cv2LightningCgShare = 0.30f;
@@ -6236,9 +6236,9 @@ private:
     bool meterTakenPreUi_ = false;   // this frame's meter was copied before the UI (recordPreUiCopy)
     void recordExposureMeter(VkCommandBuffer cmd, VulkanContext &ctx, VkImage image);   // image in TRANSFER_SRC
     void readExposureMeter();
-    float cv2BeamHaze = 1.6f;          // aerosol (haze, dust) in the beams' air scattering, x
-    float cv2BeamLight = 29.0f;        // (was 32.0, 2026-11-15 bake) beam light on cloud, x the physical irradiance (the night view's
-                                       // moon is ~2400x physical; 1 = beams dim beside it)
+    float cv2BeamHaze = 1.0f;          // aerosol (haze, dust) in the beams' air scattering, x (was 1.6, 2026-11-25 bake)
+    float cv2BeamLight = 280.0f;       // (was 29.0, 2026-11-25 bake; 32.0 before 2026-11-15) beam light on cloud, x the physical
+                                       // irradiance (the night view's moon is ~2400x physical; 1 = beams dim beside it)
     // Per-layer scales, so tuning the cumulus does not move the cirrus or the altocumulus (all three
     // used to read the shape volume at cv2ShapePeriodM).
     float cv2CirrusPeriodM = 23438.914f;  // cirrus fibre spacing across the wind (along it: x stretch) (was 11000.0, 2026-11-10 bake; exact, not 2 s.f.: a noise / map coordinate scale, rounding re-rolls every cloud)
@@ -6277,9 +6277,9 @@ private:
     float cv2CbWaist = 0.89f;           // a tower's waist, x its base radius (1 = none: <1 read as smokestacks)
     float cv2CbFlare = 1.1f;           // its head under the anvil, x its base radius (was 1.4, 2026-11-10 bake)
     float cv2CbHeadDriftKm = 7.9f;     // how far downwind the head is blown (was 15.0, 2026-11-10 bake)
-    float cv2CbLobes = 0.37f;          // cauliflower lobes on the tower (fraction of its radius)
+    float cv2CbLobes = 0.068f;          // cauliflower lobes on the tower (fraction of its radius) (was 0.37, 2026-11-25 bake)
     float cv2CbHeadLobes = 0.12f;      // ... and on its flared head (the anvil): smoother reads as the anvil
-    float cv2AnvilPuff = 0.36f;          // "Anvil puffiness" (2026-10-22): relief kept on the heads, x(1 + 1.5 it) head lobes, softer edge; 0 = before (was 0.45, 2026-11-10 bake)
+    float cv2AnvilPuff = 0.47f;          // "Anvil puffiness" (2026-10-22): relief kept on the heads, x(1 + 1.5 it) head lobes, softer edge; 0 = before (was 0.45, 2026-11-10 bake) (was 0.36, 2026-11-25 bake)
     // S3 (2026-10-22): the Sun transmittance volume (cloud_lightning.glsl cv2Stv), the clouds' one Sun shadow. It replaced the
     // fine grid, the shaft rings, the cascade and the layer map (deleted 2026-10-22).
     double cv2StvLatA[4] = {}, cv2StvLatB[4] = {};   // the eye on each level's lattice (cells)
@@ -6291,14 +6291,14 @@ private:
     glm::dvec3 cv2CdcAnchor{0.0, 0.0, 1.0};        // the clipmap plane's anchor (a unit vector in the DRIFTED frame)
     bool   cv2CdcAnchorSet = false;
     int    cv2StvBoost = 0;                        // frames left of levels 0-1's second bake (catching up)
-    float cv2AnvilLiftM = 230.0f;       // "Anvil top lift (m)": how far the head lobes raise / lower its top
+    float cv2AnvilLiftM = 430.0f;       // "Anvil top lift (m)": how far the head lobes raise / lower its top (was 230.0, 2026-11-25 bake)
     float cv2CbSparsity = 0.33f;       // 0: a tower in every lattice cell of a storm; 1: only the strongest
     float cv2CbFill = 0.48f;            // share of 3x3 lattice blocks holding a storm cell (a dominant tower + a flanking line)
     float cv2CbCumulusVar = 0.62f;      // the storm cumulus top's regional variation (+- fraction of it) (was 0.8, 2026-11-10 bake)
     float cv2CbCumulusReachKm = 31.0f;  // how far beyond a tower's edge the low cloud takes the storm cumulus top
-    float cv2CbOvershootKm = 0.054f;     // a tower's overshooting dome above the anvil lid (every tower meets it) (was 0.14, 2026-11-10 bake)
-    float cv2AnvilThickKm = 1.1f;      // the anvil shield's thickness over the storm's core (was 3.7, 2026-11-10 bake)
-    float cv2AnvilHangKm = 0.49f;       // how much lower it hangs around a tower's head (the mushroom) (was 0.87, 2026-11-10 bake)
+    float cv2CbOvershootKm = 0.0f;     // a tower's overshooting dome above the anvil lid (every tower meets it) (was 0.14, 2026-11-10 bake) (was 0.054, 2026-11-25 bake)
+    float cv2AnvilThickKm = 0.05f;      // the anvil shield's thickness over the storm's core (was 3.7, 2026-11-10 bake) (was 1.1, 2026-11-25 bake)
+    float cv2AnvilHangKm = 2.8f;       // how much lower it hangs around a tower's head (the mushroom) (was 0.87, 2026-11-10 bake) (was 0.49, 2026-11-25 bake)
     float cv2DetailLodStartM = 8900.0f; // detail erosion fades from here to 4x
     float cv2ShapePeriodM = 3099.5476f;   // tiling periods of the noise volumes (was 1900.0, 2026-11-10 bake; exact, not 2 s.f.: a noise / map coordinate scale, rounding re-rolls every cloud)
     float cv2DetailPeriodM = 341.17648f; // (was 1800.0, 2026-11-10 bake; exact, not 2 s.f.: a noise / map coordinate scale, rounding re-rolls every cloud)
@@ -6607,14 +6607,14 @@ private:
     double stormUploadedT = -1e300;
     uint64_t stormEnvKey = 0;
     bool  stormObjects = true;                   // weather.storm_objects (off = no towers at all)
-    float stormFrequency = 0.18f;                 // weather.storm_frequency: x the calibrated spawn rate (was 1.0, 2026-11-10 bake)
-    float stormLifeScale = 1.0f;                 // weather.storm_life: x every storm's lifetime
+    float stormFrequency = 0.2f;                 // weather.storm_frequency: x the calibrated spawn rate (was 1.0, 2026-11-10 bake) (was 0.18, 2026-11-25 bake)
+    float stormLifeScale = 5.0f;                 // weather.storm_life: x every storm's lifetime (was 1.0, 2026-11-25 bake)
     // The anvil shield's spread and linger (2026-11-03, issue 20261030_210137; wx::Settings::anvilFormS / anvilLingerS):
     // clouds_v2.storm_anvil_form_min / storm_anvil_decay_min, slots 450 / 451. Were a fixed 15 / 35 min.
     float stormAnvilFormMin = 240.0f; // (was 60.0, 2026-11-10 bake)
     // The tower's drawn top climbs to the anvil over this (wx::Settings::towerRiseS, clouds_v2.storm_tower_rise_min,
     // slot 452; 0 = the old ~3-min climb with its strength).
-    float stormTowerRiseMin = 26.0f; // (was 30.0, 2026-11-10 bake)
+    float stormTowerRiseMin = 120.0f; // (was 30.0, 2026-11-10 bake) (was 26.0, 2026-11-25 bake)
     float stormAnvilDecayMin = 240.0f; // (was 70.0, 2026-11-10 bake)
     // 2026-11-08 (weather salvage): which single cells spread an anvil (wx::Settings::singleAnvils: 0 none, 1 supercells,
     // 2 all) and the storm complexes' spacing (lineGapBins, 3-h bins); clouds_v2.storm_single_anvils / storm_complex_gap, slots 544 / 545.
@@ -6622,7 +6622,7 @@ private:
     float stormComplexGap = 2.0f;
     float stormCloudField = 0.65f;                // clouds_v2.storm_field: each storm's own cloud in the weather cube (was 1.0, 2026-11-10 bake)
                                                  // (cloud_v2_weather.comp stormStamp; 0 = the map alone)
-    float stormMoat = 1.0f;                      // clouds_v2.storm_moat: the clear moat round a storm (x the field)
+    float stormMoat = 0.0f;                      // clouds_v2.storm_moat: the clear moat round a storm (x the field) (was 1.0, 2026-11-25 bake)
     // 2026-11-10 (storms, issue_20261110_185127): the moat's width (km past the storm's cumulus), its feathering (0 = a hard
     // edge, 1 = soft across its whole width) and the share of storms that have one (by tower). Slots 568-570.
     float stormMoatWidthKm = 12.0f;              // clouds_v2.storm_moat_width_km
@@ -6632,14 +6632,14 @@ private:
     // radius + half "Storm cumulus reach", whose outer half keeps "Storm cumulus top"; and a tropical cyclone's storm mass,
     // clouds_v2.glsl sK): its towers' height as a share of the cumulonimbus top (0.85 = the mass as it was), how full it is
     // (the canyons between its towers fill), the heads' overhang over narrower stems, and its lobes' size. Slots 571-574.
-    float stormTowerHeight = 0.85f;              // clouds_v2.storm_tower_height
-    float stormFullness = 0.6f;                  // clouds_v2.storm_fullness
-    float stormOverhang = 0.4f;                  // clouds_v2.storm_overhang
-    float stormPuffiness = 0.4f;                 // clouds_v2.storm_puffiness
+    float stormTowerHeight = 0.28f;              // clouds_v2.storm_tower_height (was 0.85, 2026-11-25 bake)
+    float stormFullness = 0.28f;                  // clouds_v2.storm_fullness (was 0.6, 2026-11-25 bake)
+    float stormOverhang = 0.43f;                  // clouds_v2.storm_overhang (was 0.4, 2026-11-25 bake)
+    float stormPuffiness = 0.41f;                 // clouds_v2.storm_puffiness (was 0.4, 2026-11-25 bake)
     // 2026-11-12 (storms, issue_20261112_220642 "Storm shape"): the cumulus-scale lobes' weight on deep convection (the storm
     // mass, storm objects' towers), in place of "Storm cumulus fine lobes" there; the storm-scale lobes alone are kilometres
     // wide and left the towers smooth ridges. Slot 622.
-    float stormBillowLobes = 2.0f;               // clouds_v2.storm_billow_lobes
+    float stormBillowLobes = 1.8f;               // clouds_v2.storm_billow_lobes (was 2.0, 2026-11-25 bake)
     // (2026-11-14, cloudflip; no UI) the coverage over which the low field fades in from none at zero (clouds_v2.glsl
     // cv2ZeroCoverLift); 0 = the old step (any coverage over 0 drew a whole fair-weather field)
     float cv2ZeroCoverFade = 0.02f;              // clouds_v2.zero_cover_fade
@@ -6647,18 +6647,18 @@ private:
                                                  // (2026-10-27; false = every bin of the bounding rectangle, the A/B)
     int   stormShieldBinsAB = 0;                 // clouds_v2.storm_shield_bins_ab (no UI): 64 = list shields in the old
                                                  // 156-km bins (an A/B); 0 = kShieldBinsPerFace (128)
-    float stormArmCirrus = 1.0f;                 // clouds_v2.storm_arm_cirrus: the cirrus along a cyclone's arms (x, 0 = none)
+    float stormArmCirrus = 0.67f;                 // clouds_v2.storm_arm_cirrus: the cirrus along a cyclone's arms (x, 0 = none) (was 1.0, 2026-11-25 bake)
     // A tropical cyclone's SHAPE (2026-11-03, issue 20261030_205220; wx::CycloneShape, Settings > Weather > Storm objects,
     // slots 455-461, clouds_v2.storm_cyc_*): the main arms (count; was 2 -> 5.4 with intensity), their tightness (x the
     // pitch's cotangent) and turning speed (x bandRot), the minor swirls between them, the upper deck's spiral (the CDO's
     // outline and the cirrus deck's arms), the outflow cirrus' coverage and its streaks.
-    float stormCycArms = 2.0f;
-    float stormCycTightness = 1.0f;
-    float stormCycArmSpeed = 1.0f;
-    float stormCycMinorSwirls = 1.0f;
-    float stormCycDeckSpiral = 0.6f;
-    float stormCycOutflow = 1.0f;
-    float stormCycStreaks = 0.6f;
+    float stormCycArms = 0.0f; // (was 2.0, 2026-11-25 bake)
+    float stormCycTightness = 0.88f; // (was 1.0, 2026-11-25 bake)
+    float stormCycArmSpeed = 1.3f; // (was 1.0, 2026-11-25 bake)
+    float stormCycMinorSwirls = 1.1f; // (was 1.0, 2026-11-25 bake)
+    float stormCycDeckSpiral = 0.45f; // (was 0.6, 2026-11-25 bake)
+    float stormCycOutflow = 0.92f; // (was 1.0, 2026-11-25 bake)
+    float stormCycStreaks = 0.23f; // (was 0.6, 2026-11-25 bake)
     bool  stormCycSpiralAB = true;               // clouds_v2.storm_cyc_spiral (no UI): false = the pre-2026-11-03 upper deck
                                                  // (outflow disc + arm-cirrus capsule chains), the perf A/B
     wx::CycloneShape cycloneShape() const
@@ -6678,7 +6678,7 @@ private:
     // dryness; smoke as plume Gaussians (a contiguous range of the dust list, spectral: smoke.glsl), the front as point
     // sprites (kFireBuf) and its light as engine lights.
     float wildfireRate = 1.0f;     // clouds_v2.wildfires: x the calibrated fire rate (0 = none)
-    float wildfireSmoke = 1.1f;    // clouds_v2.wildfire_smoke (the user's look, baked 2026-11-18): x the smoke's optical depth
+    float wildfireSmoke = 0.93f;    // clouds_v2.wildfire_smoke (the user's look, baked 2026-11-18): x the smoke's optical depth (was 1.1, 2026-11-25 bake)
     float wildfireLight = 1.0f;    // clouds_v2.wildfire_light: x the fire front's light (points and the glow)
     // The smoke's look (2026-10-26, issues 20261026_204045 / _204239: "too beige", "do we have any controls for smoke?"):
     float wildfireSmokeBright = 0.70f;  // clouds_v2.wildfire_smoke_brightness (baked 2026-11-18): x the light the smoke scatters
@@ -7456,7 +7456,7 @@ private:
     void *glareReadMapped = nullptr;
     // User tunables (Settings > Display), persisted in settings.json. First-pass defaults —
     // expected to need retuning once seen in-app, same as every other constant this session.
-    float flareGlowGain = 0.005f;       // post-composite overall multiplier — was 1.0f, 100x the
+    float flareGlowGain = 0.0074f;      // (was 0.005, 2026-11-25 bake) post-composite overall multiplier — was 1.0f, 100x the
                                         // UI slider's actual [0, 0.01] range (SatelliteSimUI.cpp),
                                         // so a fresh settings.json (or any older save predating
                                         // this key) booted the flare glow fully maxed out
@@ -7468,14 +7468,14 @@ private:
     // Defaults are the values tuned on screen for satellites seen from the ground at a distance (the
     // user's own settings.json, 2026-09-26: gain 0.684, size 29.79, threshold 1.765, falloff 4.678,
     // near gain 8.0, near range 21.86 km).
-    float glareGain = 0.684f;
-    float glareSizePx = 29.79f; // sprite radius per unit of response past the threshold
-    float glareThreshold = 1.765f;
-    float glareFalloff = 4.678f;
-    float glareSpikes = 10.0f;
+    float glareGain = 0.11f; // (was 0.684, 2026-11-25 bake)
+    float glareSizePx = 57.0f; // sprite radius per unit of response past the threshold (was 29.79, 2026-11-25 bake)
+    float glareThreshold = 1.9f; // (was 1.765, 2026-11-25 bake)
+    float glareFalloff = 3.9f; // (was 4.678, 2026-11-25 bake)
+    float glareSpikes = 8.0f; // (was 10.0, 2026-11-25 bake)
     // Glare clusters (2026-10-20, issue 20261019_222938): how strongly a glare in a crowd gives up its spikes to
     // the brighter / summed light around it (include/glare.glsl). 0 = every source draws its own star (as before).
-    float glareClusterMerge = 1.0f;
+    float glareClusterMerge = 0.72f; // (was 1.0, 2026-11-25 bake)
     // The Milky Way's look (2026-10-28, GpuCloudParams::mwLook; Photometry tab, photometry.milky_way_*). Defaults since
     // 2026-10-30 are the tuned look in the user's settings.json: a dimmer, bluer band under the air than the photograph,
     // star clouds 1.0 and zoom detail 0.99 (they started as 1.0 / 2.5 / 0.5 / 0.7 / 0.6).
@@ -7517,9 +7517,9 @@ private:
     // a sunlit white model or a mirror holding the Sun glows in proportion to its size. 0 = only the energy-matched
     // sprite seed (the old look: a close Reflect mirror was a white quad with no glow). Slider slot 620.
     float meshGlareGain = 1.0f;
-    float glareNearRangeKm = 21.86f; // where the multiplier is 1 again: a satellite seen from the ground
+    float glareNearRangeKm = 1.0f; // where the multiplier is 1 again: a satellite seen from the ground (was 21.86, 2026-11-25 bake)
                                      // is never this close, so the tuned look above is intact
-    float flareStreakGain = 0.35f;      // per-tap streak/godray strength (flare_blur.comp mode=2)
+    float flareStreakGain = 0.37f;      // per-tap streak/godray strength (flare_blur.comp mode=2) (was 0.35, 2026-11-25 bake)
     float sunFlareRefIntensity = 40.0f; // fixed reference brightness for the sun's virtual point
                                         // in the flare-source buffer — NOT a slider (kept small in
                                         // scope this round); tune in code if the sun's godray/glow
@@ -8022,7 +8022,7 @@ private:
     // view-dependent specular term the OBSERVER sees the mirror glint by; this is the physical
     // irradiance the mirror delivers to its ground target, independent of view angle — see
     // sat_orbit.comp's beam-writer comment). Uploaded via SatOrbitPC.
-    float beamGain = 0.0088f;
+    float beamGain = 0.009f; // (was 0.0088, 2026-11-25 bake)
     // C12 follow-up #34: beamFootprintRadM (a flat, tunable constant) removed — the ground
     // footprint is now physically derived in sat_orbit.comp from mirror area + range to target.
     float beamMaxRangeM = 1100000.0f; // C12 follow-up #6 — render-time "is the observer close
@@ -8032,7 +8032,7 @@ private:
     // cloud-density march from follow-ups #14-#16, reverted per user request — no cloud lighting
     // yet). Own gain, separate from beamGain (that's the physical ground-irradiance term feeding
     // the ground spot; this purely scales the visual glow's brightness) — dim default, tunable.
-    float beamSkyGlowGain = 0.0055f;
+    float beamSkyGlowGain = 0.0034f; // (was 0.0055, 2026-11-25 bake)
     // 2026-08-06 reversibility rework: replaced the old rate-limited mirror slew (deg/sec,
     // integrated frame-by-frame — inherently history-dependent, so it could not be made
     // reversible) with a fixed-width sim-time window a satellite commits to one target for. See
@@ -8067,7 +8067,7 @@ private:
     // designed for a camera near/inside the volume). The tube fades out approaching a beam
     // (crossfade in the shader) while this purely angular (no segment geometry) glow term fades
     // in — own gain per [[feedback_shared_gain_sliders]], not a reuse of beamSkyGlowGain.
-    float beamGlowBleedGain = 0.00048f;
+    float beamGlowBleedGain = 0.001f; // (was 0.00048, 2026-11-25 bake)
     // C12 follow-up #40: radius (meters) of the crossfade blend zone around a beam's own 3D line —
     // was a hardcoded kNearFieldCrossoverM constant in cloud_march.comp, now user-tunable.
     // Per-pixel cloud shadow fade distance. Was 80 km (matching the deleted 128x128 grid's
@@ -8149,7 +8149,7 @@ private:
     float cloudDensity = 1.3f;
     float cloudBaseAltM = 6000.0f; // layer 0 shell altitude (low cloud / stratus)
     float cloudTopAltM = 15000.0f; // layer 1 shell altitude (high cirrus)
-    float cloudDriftRate = 3.7104073e-06f; // (was 6.5e-06, 2026-11-10 bake; exact, not 2 s.f.: a noise / map coordinate scale, rounding re-rolls every cloud)
+    float cloudDriftRate = 6.5e-06f; // the user's value again at the 2026-11-25 bake (3.7104073e-06 from the 2026-11-10 bake; 6.5e-06 before, the rate kCloudDriftPhaseDefault was derived at); exact, not 2 s.f.: a noise / map coordinate scale, rounding re-rolls every cloud
     // The map's drift phase = rate x (t - kCloudDriftEpochS) + this offset (session state, never
     // saved). The default puts the default rate's map exactly where rate x (t - J2000 - kGmstShiftS) did,
     // i.e. where it was before the Earth rotation gained its GMST term (an old time + kGmstShiftS shows the
@@ -8216,16 +8216,16 @@ private:
     float cityLightsStrength = 1.0f;     // procedural city street lights (.plans/CITIES_PLAN.md)
     float cityRoadsStrength = 2.0f;      // the major roads' share of them
     float citySpriteGain = 4.0f;         // city lights as satellite point sprites (0 = off)
-    float citySpriteGround = 1.0f;      // the ground glitter's share kept where the sprites carry the light
+    float citySpriteGround = 0.98f;      // the ground glitter's share kept where the sprites carry the light (was 1.0, 2026-11-25 bake)
     float cityTwinkleRate = 4.0f;        // glitter + sprite scintillation rate (1 = 0.5-1.2 rad/s)
-    float citySpriteStartFootM = 18.0f;  // sprites begin where a pixel spans this much ground (m): far only
+    float citySpriteStartFootM = 10.0f;  // sprites begin where a pixel spans this much ground (m): far only (was 18.0, 2026-11-25 bake)
     // City light LOD (review 13, Night lights tab): the ground footprint (m per pixel) where each layer ends.
     float cityPostsFootM = 27.0f;        // lamp posts and their pools
-    float cityGridFootM = 380.0f;        // the street grid (past it: the glitter alone)
+    float cityGridFootM = 400.0f;        // the street grid (past it: the glitter alone) (was 380.0, 2026-11-25 bake)
     float cityRoadsFootM = 1300.0f;       // the real major roads
     float cityLayoutFootM = 2000.0f;      // the street layout (past it: the far glitter only)
-    float cityStreetShareNear = 0.0f;    // the streets' share of the light close up
-    float cityStreetShareFar = 0.13f;    // ... and as they start to fade out
+    float cityStreetShareNear = 0.081f;    // the streets' share of the light close up (was 0.0, 2026-11-25 bake)
+    float cityStreetShareFar = 0.036f;    // ... and as they start to fade out (was 0.13, 2026-11-25 bake)
     // The city light sprites take over where a pixel spans citySpriteStartFootM of ground (the ground's
     // own footprint, stretched at grazing angles — where its glitter points smear into blobs); nearer
     // lights are the ground's glitter alone: up close a point sprite read as a floating lantern (user
@@ -8440,21 +8440,21 @@ private:
     float auroraStormRedGain = 0.96f;        // storm-time 630-nm red equatorward of the oval
     float oceanSeaStateGain = 1.0f;          // waves follow the weather (Ocean tab, slot 213; 0 = fixed sea)
     float oceanWhitecapGain = 1.0f;          // whitecap foam gain (Ocean tab, slot 214)
-    float oceanWaveRangeKm = 100.0f;         // review 21: waves fade to flat from 0.6x this (was a fixed 3-8 km; slot 237)
+    float oceanWaveRangeKm = 45.0f;         // review 21: waves fade to flat from 0.6x this (was a fixed 3-8 km; slot 237) (was 100.0, 2026-11-25 bake)
     // Review 24 (Ocean tab, slots 248-250): the resolvable ripple where the octaves are filtered away (0 = the mirror),
     // and the wave field's 2D warp at 24 / 8 cells (octave-0 cells, ~18 m).
-    float oceanFarRipple = 1.7f, oceanWarp = 3.5f, oceanWarpDetail = 1.2f;
+    float oceanFarRipple = 0.0f, oceanWarp = 2.8f, oceanWarpDetail = 1.7f; // (was oceanFarRipple 1.7, oceanWarp 3.5, oceanWarpDetail 1.2, 2026-11-25 bake)
     float oceanFarRippleSize = 1.5f;   // review 27 (slot 256): the far ripple's cell, in along-view pixel footprints
     float oceanStormTrails = 1.0f;     // 2026-10-04 (slot 260): "Storm sea trails", the sky TAA keeps a stormy sea's history
                                        // unclipped (crests smear like spray and chop); 0 = off, x the sea state's storm share
-    float oceanWaveRangeFade = 0.4f;   // review 28 (slot 257): the share of the wave range the waves fade over (0.4 = from 0.6x)
-    float oceanMotionFilter = 1.0f;          // 2026-10-22: the wave octaves at the pixel footprint while the eye moves (cp.oceanWaveFootK)
+    float oceanWaveRangeFade = 0.27f;   // review 28 (slot 257): the share of the wave range the waves fade over (0.4 = from 0.6x) (was 0.4, 2026-11-25 bake)
+    float oceanMotionFilter = 0.0f;          // 2026-10-22: the wave octaves at the pixel footprint while the eye moves (cp.oceanWaveFootK) (was 1.0, 2026-11-25 bake)
     float seaMotionK = 0.0f;                 // its eased share (SatelliteSim.cpp, the CloudParams fill)
     glm::dvec3 seaMotionPrevEye{0.0};
     bool seaMotionPrevValid = false;
     float oceanWaveSharpness = 0.1f;         // review 21: x the footprint the wave octaves are filtered at (1 = review 14; slot 243)
     float oceanReflSamples = 6.0f;           // ocean sky-reflection loop sample count (N_REFL)
-    float moonGain = 0.0053f;                // shared moonlight brightness: terrain direct term + cloud
+    float moonGain = 0.013f;                // shared moonlight brightness: terrain direct term + cloud (was 0.0053, 2026-11-25 bake)
                                              // moonContrib (default matches the prior hardcoded cloud value)
     float stormStrength = 0.29f;             // C16: aurora fold chaos / coverage fill [0,1]; DERIVED each frame
                                              // from the activity index (Kp - 1) / 9 (max 0.85) since 2026-10-03

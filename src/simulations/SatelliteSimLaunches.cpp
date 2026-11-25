@@ -11099,19 +11099,19 @@ void SatelliteSim::buildLaunchGraphicsSection(const UIInput &inp, UIRenderer &ui
     buildCloudSliderRows(inp, ui, rows, (int)(sizeof(rows) / sizeof(rows[0])), false);
     if (uiButton(inp, ui, "LdGfxReset", 0, tx(Txt::BtnResetExhaustToDefaults), tx(Txt::TipEverySliderAboveBackToDefault)))
     {
-        // The compiled-in defaults (SatelliteSim.h, the 2026-10-30 tuned look). Keep the two in step.
-        launchPlumeGain = 0.3f;
+        // The compiled-in defaults (SatelliteSim.h, the 2026-10-30 tuned look, re-baked 2026-11-25). Keep the two in step.
+        launchPlumeGain = 0.23f;
         launchPlumeBright = 1.06334841f;
         launchPlumeWidth = 0.877828062f;
         launchPlumeBillows = 0.9909502f;
-        launchPlumeGrowth = 1.0f;
+        launchPlumeGrowth = 0.43f;
         launchGroundCloudGain = launchRocketGain = 1.0f;
         engineLightGain = 0.9049774f;
-        launchPlumeDispersal = 3.93665171f;
+        launchPlumeDispersal = 2.9f;
         launchStreakCount = 0.0f;
         launchStreakBright = 1.0f;
-        launchStreakSpread = 0.909502268f;
-        launchStreakLengthS = 54.76923f;
+        launchStreakSpread = 0.95f;
+        launchStreakLengthS = 26.0f;
         launchStreakDiffusion = 0.5882353f;
         launchNucleusBright = 1.040724f;
         launchStagingCloud = 1.90045261f;
