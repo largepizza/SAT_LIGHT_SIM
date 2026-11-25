@@ -2139,8 +2139,12 @@ struct GpuCloudParams
     // colour at luminance 1 (a lunar eclipse's red, SatelliteSim::nightKeyTint; 1 otherwise), multiplied into every
     // moonlit term's colour; w the Moon's eclipse light (luminance vs uneclipsed, already in moonDirENU.w).
     glm::vec4 moonTint;
+    // -- auroraLight (12368 -> 12384, 2026-11-25, issue_20261124_232008): xyz the aurora's light from above at the
+    // observer (RGB, a share of the full Moon overhead, as terrainErosion.z's night sky light; 0 on ordinary nights,
+    // a few tenths on the Sun's Fury night): added to the night sky light on the clouds, ground and sea. w unused.
+    glm::vec4 auroraLight;
 };
-static_assert(sizeof(GpuCloudParams) == 12368, "GpuCloudParams layout mismatch");
+static_assert(sizeof(GpuCloudParams) == 12384, "GpuCloudParams layout mismatch");
 // sat_sky_minimal.frag declares only these two at their offsets (its SPIR-V budget): keep its CloudParamsSun in step.
 static_assert(offsetof(GpuCloudParams, skyScreenH) == 528, "sat_sky_minimal.frag CloudParamsSun.skyScreenH offset");
 static_assert(offsetof(GpuCloudParams, surgeInfo) == 11168, "sat_sky_minimal.frag CloudParamsSun.surgeInfo offset");
@@ -8425,6 +8429,14 @@ private:
     // night key (cloud.moonTint). moonLightUneclipsed: moonDirENU.w before the eclipse (harness state).
     glm::vec3 moonEclipseLight{1.0f};
     glm::vec3 moonEclipseTint{1.0f};
+    float moonEclipseLum = 1.0f;     // what moonDirENU.w was multiplied by: max(the disc's luminance factor, the floor)
+    float moonEclipseFloor = 0.04f;
+    // The aurora's light from above (2026-11-25, auroraSkyLightCpu; cloud.auroraLight): "clouds.aurora_light" x the
+    // per-line scales (luminance, x full Moon, per unit of the band's integrated weight).
+    float auroraLightGain = 1.0f;
+    static constexpr float kAuroraLightGreen = 0.008f, kAuroraLightRed = 0.012f;
+    glm::vec3 auroraLight{0.0f};
+    glm::dvec2 auroraLightLines{0.0};  // "clouds.moon_eclipse_floor": the eclipsed Moon's light never below this x full (2026-11-25)
     float moonLightUneclipsed = 1.0f;
     glm::dvec3 moonGeoEciM(double t) const;
     double findEclipse(bool solar, double t0) const;                // orbit colour grade (Atmosphere tab, slot 219; the Artemis II photos)

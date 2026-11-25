@@ -313,3 +313,86 @@ float auroraOvalWeightCpu(const AuroraGpu &g, const glm::dvec3 &dir) {
     const double mltB = 0.3 + 0.7 * smooth01(-0.2, 0.7, cosMlt);
     return (float)(inner * outer * mltB * g.oval2.x * (1.0 + 1.5 * boost));
 }
+
+// The aurora's column brightness at a ground direction, split by line (2026-11-25, issue_20261124_232008): x the green
+// (557.7 nm, the curtains' lower parts: auroraOvalWeightCpu's band) and y the red (630 nm: the curtains' red tops, a
+// share that grows into a storm, + the storm-time red glow equatorward of the oval, cloud_march.comp auroraStormRed
+// with its patchiness at its mean). Night side only (the march's per-sample day gate). Units: the oval weight's.
+static glm::dvec2 auroraColumnsCpu(const AuroraGpu &g, const glm::dvec3 &dir, const glm::dvec3 &sunEcef, double redGain) {
+    const double night = 1.0 - std::clamp((glm::dot(dir, sunEcef) + 0.15) / 0.3, 0.0, 1.0);
+    if (night <= 0.001) return glm::dvec2(0.0);
+    const glm::dvec3 ax = geomagPoleEcef();
+    const glm::dvec3 pole = glm::dot(dir, ax) > 0.0 ? ax : -ax;
+    const double colat = glm::degrees(std::acos(std::clamp(glm::dot(dir, pole), -1.0, 1.0)));
+    if (colat > g.oval2.y) return glm::dvec2(0.0);
+    const glm::dvec3 m(g.midnight), e = glm::cross(ax, m);
+    double c = glm::dot(dir, m), s = glm::dot(dir, e);
+    const double r = std::max(std::hypot(c, s), 1e-4);
+    c /= r; s /= r;
+    const double cosMlt = c * 0.9664 - s * 0.2571;
+    const double w = 0.5 + 0.5 * cosMlt;
+    double eq = g.oval.y + (g.oval.x - g.oval.y) * w;
+    double pol = g.oval.w + (g.oval.z - g.oval.w) * w;
+    const double cd = c * g.sub.y + s * g.sub.z;
+    const double bb = std::exp((cd - 1.0) * g.sub.w);
+    const double boost = g.sub.x * bb;
+    pol = std::max(pol - g.oval2.w * bb, 2.0);
+    eq += 0.8 * boost;
+    const double inner = smooth01(pol - 0.8, pol + 1.2, colat);
+    const double outer = 1.0 - smooth01(eq - 2.0, eq + 3.5, colat);
+    const double mltB = 0.3 + 0.7 * smooth01(-0.2, 0.7, cosMlt);
+    const double band = inner * outer * mltB * g.oval2.x * (1.0 + 1.5 * boost);
+    const double stormHi = smooth01(5.0, 8.5, g.midnight.w);
+    // In a great storm the widened oval is mostly the diffuse red; the discrete green arcs keep to part of it (the
+    // march's auroraDiscreteShare): the green's share falls to 0.4 (the Fury night's sky is red-dominant).
+    const double green = band * (1.0 - 0.6 * stormHi);
+    double red = band * (0.15 + 0.35 * stormHi);
+    const double k = stormHi * redGain;
+    if (k > 0.0) {
+        const double x = (colat - eq) / std::max(7.0 * stormHi, 0.5);
+        if (x > -1.5 && x < 1.2) {
+            const double lat = smooth01(-1.5, -0.2, x) * (1.0 - smooth01(0.55, 1.15, x));
+            const double mlt = 0.25 + 0.75 * smooth01(-0.4, 0.7, cosMlt);
+            red += k * lat * mlt * 0.72 * g.oval2.x;   // 0.72: (0.15 + 1.7 p^2) at its mean over p
+        }
+    }
+    return glm::dvec2(green, red) * night;
+}
+
+glm::dvec2 auroraSkyLightCpu(const AuroraGpu &g, const glm::dvec3 &up, const glm::dvec3 &sunEcef, double redGain) {
+    // Each line as a thin emitting layer (green ~120 km, red ~280 km). The irradiance from a layer of column brightness
+    // B over the ground point is the integral of B h_eff / r^3 dA (r the distance, h_eff its height over the point's
+    // horizon); a uniform flat layer gives 2 pi B. Samples sit on rings of equal share of that flat kernel (ring k holds
+    // the share (k+0.5)/K .. at rho = h sqrt(1/(1-f)^2 - 1)), each weighted by the curved Earth's kernel over the flat
+    // one (0 below the horizon), so the result is the share of a uniform overhead layer of unit brightness.
+    constexpr int kRings = 8, kAz = 16;
+    constexpr double kRe = 6371.0;
+    const glm::dvec3 ref = std::abs(up.z) < 0.9 ? glm::dvec3(0, 0, 1) : glm::dvec3(1, 0, 0);
+    const glm::dvec3 e1 = glm::normalize(glm::cross(up, ref)), e2 = glm::cross(up, e1);
+    glm::dvec2 out(0.0);
+    const double hKm[2] = {120.0, 280.0};
+    for (int L = 0; L < 2; ++L) {
+        const double h = hKm[L];
+        double sum = 0.0;
+        for (int k = 0; k < kRings; ++k) {
+            const double f = (k + 0.5) / kRings;
+            const double rho = h * std::sqrt(1.0 / ((1.0 - f) * (1.0 - f)) - 1.0);
+            const double flatK = h / std::pow(h * h + rho * rho, 1.5);
+            const double gam = rho / kRe;
+            for (int j = 0; j < kAz; ++j) {
+                const double az = 6.283185307179586 * (j + 0.5 * (k & 1) + 0.25) / kAz;
+                const glm::dvec3 dirP = std::cos(gam) * up + std::sin(gam) * (std::cos(az) * e1 + std::sin(az) * e2);
+                const glm::dvec3 d = (kRe + h) * dirP - kRe * up;
+                const double hEff = glm::dot(d, up);
+                if (hEff <= 0.0) continue;
+                const double rr = glm::length(d);
+                const glm::dvec2 col = auroraColumnsCpu(g, dirP, sunEcef, redGain);
+                const double b = L == 0 ? col.x : col.y;
+                if (b <= 0.0) continue;
+                sum += b * (hEff / (rr * rr * rr)) / flatK;
+            }
+        }
+        out[L] = sum / (kRings * kAz);
+    }
+    return out;
+}

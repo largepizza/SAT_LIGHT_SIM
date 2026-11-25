@@ -139,7 +139,7 @@ vec3 farLit(vec3 up, float hTop, float R, float tau, float relief, float msB, ve
     float twi  = smoothstep(horizS - 0.12, horizS, sunUp) * (1.0 - smoothstep(horizS + 0.05, horizS + 0.25, sunUp));
     float skyDusk = smoothstep(horizS - 0.09, horizS + 0.04, sunUp);
     vec3  skyZ = skyZenithAt(pT, sunDir, BETA_R, BETA_M) * skyDusk * cv2.look.w * (1.0 + cv2.atmo.y * twi)
-               + kMoonColor * cloud.moonGain * cv2.misc.y * (0.2 * cloud.terrainErosion.z);
+               + (kMoonColor * cloud.terrainErosion.z + cloud.auroraLight.rgb) * (0.2 * cloud.moonGain * cv2.misc.y);
     // A solar eclipse: the Moon's shadow at this point of the layer, its sunlight and its sky light (eclipse.glsl).
     if (cloud.moonMisc.y > 0.5) {
         keyL *= eclipseSunVis(pT * 1e-3, sunDir, 0.0);

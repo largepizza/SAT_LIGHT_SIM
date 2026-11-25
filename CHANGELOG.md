@@ -837,7 +837,12 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 - During a lunar eclipse the Moon's light now fades and turns red with its disc. The clouds, ground, sea and the
   moonlit sky were still lit grey-white as by a full Moon under a blood-red disc; at totality the night is now dark
-  and faintly red, with the stars out.
+  with the stars out, the clouds faintly lit red (the eclipsed Moon's light never drops below 4% of a full Moon,
+  settings key `clouds.moon_eclipse_floor`). The disc's red is now brightest at the umbra's edge and darkest at its
+  centre, as in a real eclipse (it was the other way round).
+- **The aurora lights the night.** On a great storm night (the Sun's Fury) the clouds and the ground take a faint
+  red-orange light from the aurora overhead; under an ordinary overhead green aurora at high latitudes the light is a
+  subtle green, and an aurora low on the horizon adds next to nothing. Settings key `clouds.aurora_light` (1).
 - Looking down at the sea from high altitude (tens of km) no longer shows broad concentric rings of lighter and
   darker haze round the point below you (issue_20261124_185624). The cloud and terrain shadows on the air were sampled
   partly inside the Earth past the sea surface, which darkened the haze in steps with distance.

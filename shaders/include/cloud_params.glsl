@@ -550,4 +550,8 @@ layout(set = 0, binding = CLOUD_PARAMS_BINDING) uniform CloudParams {
     // -- moonTint (12352 -> 12368, 2026-11-24, issue_20261124_190627): xyz the night key's colour at luminance 1 (a lunar
     // eclipse's red; 1 otherwise), x every moonlit term's colour; w the Moon's eclipse light (already in moonDirENU.w).
     vec4  moonTint;
+    // -- auroraLight (12368 -> 12384, 2026-11-25, issue_20261124_232008): xyz the aurora's light from above at the eye
+    // (RGB, a share of the full Moon overhead like terrainErosion.z; SatelliteSim auroraSkyLightCpu), added to the
+    // night sky light wherever that lights clouds, ground and sea. w unused.
+    vec4  auroraLight;
 } cloud;

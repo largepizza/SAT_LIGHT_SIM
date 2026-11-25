@@ -67,6 +67,10 @@ AuroraGpu auroraGpuParams(const SpaceWeather &sw, const glm::dvec3 &sunEcef);
 // CPU mirror of the shader's band (shaders/include/aurora_oval.glsl), without the noise: 0..1 brightness
 // of the oval at a ground direction (ECEF unit vector). The ambience driver uses it.
 float auroraOvalWeightCpu(const AuroraGpu &g, const glm::dvec3 &dirEcef);
+// The aurora's light from above at a ground point (2026-11-25): x the green (557.7 nm) and y the red (630 nm) irradiance, each
+// as the share of a uniform overhead layer of unit column brightness (auroraOvalWeightCpu's units; noise at its mean).
+// up = the point's ECEF unit vector, redGain = clouds.aurora_storm_red. ~256 band evaluations.
+glm::dvec2 auroraSkyLightCpu(const AuroraGpu &g, const glm::dvec3 &up, const glm::dvec3 &sunEcef, double redGain);
 
 // The geomagnetic north pole (dipole axis), ECEF unit vector — kGeomagPoleECEF in the shaders.
 glm::dvec3 geomagPoleEcef();

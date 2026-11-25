@@ -490,6 +490,16 @@ EXPOSURE AND MOON section since 2026-10-06, key
   SKY_LITE; `kMoonColor` x it in the march, far, lightning and sea-reflection passes). The disc itself does not
   read `moonDirENU.w`, so it is not dimmed twice. Harness `state` -> `moon.lunar_eclipse_light` / `_tint`,
   `brightness_vs_full` (eclipsed) and `brightness_vs_full_uneclipsed`, `night_key_w`.
+  **Floor (2026-11-25, the user: "min brightness is a good idea"):** at the disc's own factor (0.0066 at the
+  2037-01-31 totality) the night went black (frame mean 56 -> 4 levels). The light takes
+  max(factor, `clouds.moon_eclipse_floor`), default 0.04 (`moonEclipseLum`, state `moon.eclipse_light_lum`), the
+  tint unchanged: clouds at totality 4 / 6 / 11 / 23 red levels for no floor / 0.02 / 0.04 / 0.08 (the sea reads
+  only from 0.08), a full Moon's 56 grey. max() keeps the partial phases monotonic (12:00 / 12:25 / 12:50 / 13:15
+  UTC: 0.87 / 0.50 / 0.15 / 0.04) and an uneclipsed Moon at 1. The disc does not read it.
+  **The umbra's depth was inverted until 2026-11-25:** `umb = smoothstep(aE - kSunAngR, 0.3 aE, aE - th)` took the
+  depth where the angle belongs, so the red was 0.45 at the umbra's edge and full at its centre; it is now
+  `smoothstep(.., .., th)` (0 at the edge, 1 deep: the centre dims to 0.45, the edge stays coppery), in the shader
+  and the CPU integral alike.
 - **The Sun's angular radius is its TRUE one** (`sunAngRTrue` from `satphot::sunDistAuAt`, 0.2624 deg in July ..
   0.2711 in January; `cloud.taaJitter.w`, `kSunAngR` in sat_sky.frag): it decides total vs annular. It was a
   fixed 0.2667 deg.
