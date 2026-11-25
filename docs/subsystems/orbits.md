@@ -538,6 +538,10 @@ azimuth / elevation from the site and the Sun's elevation there).
   27.78 +- 0.23 open, 3 reps, the window's own drawing included).
 - **The Watch** (one button per row, `reflectorSiteWatch`): 1x, the observer on the ground 15 km from the site,
   side-on to the mean beam (bearing = beam azimuth + 90 deg), looking at the air 1.5 km over the site, FOV >= 60.
+- **Under the Sun's Fury** (2026-11-24, issue_20261124_194453): the storm takes 80% of the site-aiming mirrors out of
+  control over its main phase (`kFuryMirrorLossP`, kessler.md "Reflect Orbital mirrors under the Fury"); a dead mirror
+  resolves no target (`usesSite` needs `!deadNow`), tumbles and is skipped by the census, so every site's beam count
+  falls to ~1/5 (Nuuk at the report's instant 75 vs 356 with the scenario off) and the sky keeps them as tumbling glints.
 
 ### Per-satellite selection (GPU, sat_orbit.comp) — deterministic lock windows
 Target IDENTITY is chosen per fixed-width **sim-time window**

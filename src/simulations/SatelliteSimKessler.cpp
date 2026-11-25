@@ -35,8 +35,17 @@ constexpr double kFuryFlareT = 1184448600.0;
 constexpr double kFuryArriveT = 1184511600.0;
 constexpr double kFuryPeakKp = 11.0;
 constexpr uint64_t kStormSeed = 0x5EEDF0221ull;
+// (2026-11-24, issue_20261124_194453) The share of the sun-reflecting mirrors (Reflect Orbital's 55-m, 500-kg film
+// sails at 500 km) the Sun's Fury takes out of control. Drag torque: the storm lifts the density at 500 km ~8x
+// (stormDensityGain 7) to ~4e-12 kg/m^3; at 7.6 km/s that is q ~1e-4 Pa on up to ~2800 m^2 of film, ~0.3 N, and a
+// centre-of-pressure offset of ~1 m (sag, asymmetric unfolding, the canted face aimed at a site) gives ~0.3 N m: a
+// small satellite's wheels (~1-5 N m s) saturate in seconds to minutes on a face-on pass, and the magnetorquers
+// that would dump the momentum fight a field disturbed by hundreds of nT. Only a mirror that safes edge-on in time
+// and rides out the ~13-h main phase keeps control: taken as one in five. Lost = dead to the engine (passive,
+// tumbling, no avoidance); drag then brings the sail down (cdAm ~3 m^2/kg: weeks, not years).
+constexpr double kFuryMirrorLossP = 0.8;
 constexpr uint32_t kCacheMagic = 0x4B534C52u; // "RLSK"
-constexpr uint32_t kCacheVersion = 21; // (21: a ballistic piece (perigee <= 120 km) dies where its arc reaches 100 km, not at the breakup, issue_20261104_015233, 2026-11-04; 20: momentum kept exactly: a catastrophic pair collision's records and small population shifted to the centre-of-mass velocity, its dust at that velocity, 2026-11-03; 19: a catastrophic pair collision's fragments keep a share of their parent's velocity relative to the centre of mass (beta = 1 - 0.8 u^1.5), 2026-10-30; 18: a catastrophic pair collision's fragments move toward the centre-of-mass velocity, 2026-10-29; 17: an engine pair collision's projectile placed on the target at the spread event time, 2026-10-24; 16: the 2020 benchmark shells left out of the deployment era by default, 2026-10-21; 15: the deployment era: roster born / gone seconds, 2026-10-20; 14: the GEO belt joins the roster, 2026-10-20; 13: an explosion's fragment count scales with a parent over 2 t) bump whenever the world's logic changes (4: round 2, large pieces + grid;
+constexpr uint32_t kCacheVersion = 22; // (22: the Sun's Fury takes kFuryMirrorLossP of the sun-reflecting mirrors out of control, issue_20261124_194453, 2026-11-24; 21: a ballistic piece (perigee <= 120 km) dies where its arc reaches 100 km, not at the breakup, issue_20261104_015233, 2026-11-04; 20: momentum kept exactly: a catastrophic pair collision's records and small population shifted to the centre-of-mass velocity, its dust at that velocity, 2026-11-03; 19: a catastrophic pair collision's fragments keep a share of their parent's velocity relative to the centre of mass (beta = 1 - 0.8 u^1.5), 2026-10-30; 18: a catastrophic pair collision's fragments move toward the centre-of-mass velocity, 2026-10-29; 17: an engine pair collision's projectile placed on the target at the spread event time, 2026-10-24; 16: the 2020 benchmark shells left out of the deployment era by default, 2026-10-21; 15: the deployment era: roster born / gone seconds, 2026-10-20; 14: the GEO belt joins the roster, 2026-10-20; 13: an explosion's fragment count scales with a parent over 2 t) bump whenever the world's logic changes (4: round 2, large pieces + grid;
                                        // 12: steps on a fixed grid, seeded by their index; a step's events ordered)
 
 uint64_t fnv(uint64_t h, const void *p, size_t n)
@@ -745,6 +754,11 @@ static void buildWorld(const SatelliteSim &sim, kessler::World &w, const std::ve
         ti.sizeM = ty.sizeM > 0.0f ? (double)ty.sizeM : 2.0 * ti.radiusM;
         ti.arrayShare = ty.debrisArrayShare;
         ti.radiatorShare = ty.debrisRadiatorShare;
+        // (2026-11-24, issue_20261124_194453) A sun-reflecting mirror (its attitude aims a ground site): the Sun's
+        // Fury takes most of them out of control (Kessler.cpp stormSeedEvents; kessler.md "Reflect Orbital mirrors
+        // under the Fury").
+        if (ty.isModel() && attUsesGroundSite(ty.groups))
+            ti.stormLossP = kFuryMirrorLossP;
     }
     // The debris kit: which types the large pieces are drawn with, and the area each class snaps to.
     for (int k = 0; k < 3; ++k)
@@ -846,6 +860,7 @@ static uint64_t worldHash(const kessler::World &w)
         h = fnvv(h, t.arrayShare);
         h = fnvv(h, t.radiatorShare);
         h = fnvv(h, t.kitKind);
+        h = fnvv(h, t.stormLossP);
     }
     if (!w.roster.empty())
         h = fnv(h, w.roster.data(), w.roster.size() * sizeof(kessler::RosterObj));

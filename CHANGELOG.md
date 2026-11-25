@@ -121,6 +121,10 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   reverb up close, a low-passed boom from the ground); and the debris, its dust and its small fragments carry the
   pair's momentum (a head-on hit sends the cloud along the impactor's path instead of leaving it with the
   formation).
+- **The storm cripples the orbital mirrors.** Reflect Orbital's huge, light film sails cannot hold their attitude
+  against the storm-heated upper atmosphere: about four in five go out of control over the storm's first night.
+  Their sites lose most of their beams (the arc of light over a site becomes a few scattered flares), the lost mirrors
+  tumble and flash as loose glints, and drag brings them down within weeks.
 - **A collision's dust is no longer a round puff:** it streams out along the collision's relative velocity, each
   body's debris running on its own way (the lighter impactor's side faster), in a cone that narrows the harder the
   hit, with a smaller glowing core where they met. Explosions still burst evenly.

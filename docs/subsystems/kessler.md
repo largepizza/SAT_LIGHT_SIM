@@ -267,12 +267,27 @@ other agents). After the change the fingerprint above is also what Potato shows 
   them 2.16 / 2.12 / 2.12 at +5 / +30 / +60 s, major axis 0.03-0.23 deg from vrel, bit-identical on a second pass (the
   first cut without the core cap: 1.54). Cost there +0.43 ms GPU (22.98 +- 0.20 vs 22.55 +- 0.27, 3 reps, 1600x900;
   the cloud bucket +0.30). From that eye the streams lie partly along the line of sight: two lobes more than a streak.
-- **Reflect Orbital mirrors under the Fury (2026-11-24, issue_20261124_194453):** a dead mirror aims at nothing
-  (sat_orbit.comp `usesSite` needs `!deadNow`; the census skips it too) and tumbles, so its glint is a brief point
-  flare. The storm kills ~1.9% of a 500-km SSO shell (`stormSeedEvents`), the cascade a little more: at day 85
-  (2037-10-08 09:24:33 UTC) the census counts 4810 of 5000 mirrors alive and 1358 beams vs 1408 with the scenario off
-  (-3.6%; Nuuk 344 vs 356). A Fury that disables most mirrors would be a scenario change (kill share by shell, a
-  kCacheVersion bump and a new prebake), not a targeting one.
+- **Reflect Orbital mirrors under the Fury (2026-11-24, issue_20261124_194453; kCacheVersion 22):** a type whose
+  attitude aims a ground site (`attUsesGroundSite`: Reflect Orbital's 55-m, 500-kg film sails at 500 km) carries
+  `TypeInfo::stormLossP` = `kFuryMirrorLossP` 0.8, which replaces the altitude / inclination kill model for it in
+  `stormSeedEvents`: each mirror is lost with p 0.8 (hash channel 11), at arrival + 0.5 .. 13 h (0.5 + 12.5 h2^2: front-
+  loaded on the density surge, through the ~13-h main phase of `scriptedStormShape`), as an ordinary EV_KILL. Why: the
+  storm lifts the density at 500 km ~8x (`stormDensityGain` 7) to ~4e-12 kg/m^3; q ~1e-4 Pa on up to ~2800 m^2 of film
+  is ~0.3 N, and a ~1-m centre-of-pressure offset (sag, uneven unfolding, the face canted toward a site) ~0.3 N m, which
+  saturates a small satellite's wheels (~1-5 N m s) in seconds to minutes on a face-on pass while the magnetorquers
+  fight a disturbed field; only a mirror that safes edge-on in time keeps control (taken as one in five). Lost = dead to
+  the engine: passive (no avoidance), tumbling (its glint a brief flash, a loose flare), no beam (sat_orbit.comp
+  `usesSite` needs `!deadNow`; the census skips it), and drag brings it down (`killRoster`: cdAm = 2.2 x area / mass,
+  ~3 m^2/kg for a sail, so weeks, not years). Measured (harness_runs/d4_new, worktree smokehaze): the storm night
+  2037-07-16 03:00 UTC 1068 of 5000 mirrors in control, 186 beams vs 836 with the scenario off; the report's shot
+  (Nuuk, 2037-10-08 09:24:33 UTC, day 85) 999 alive, 282 beams vs 1410 off, Nuuk 75 vs 356 (was 4810 / 1358 / 344 with
+  the shell model: 1.9% storm loss). The arc of beams over Nuuk becomes a broken string of single flares. **The shipped
+  prebake is stale** (world 984125cb6235fb95 -> 7ac017dc3de7093b) until `tools/make_kessler_prebake.py` is rerun: the
+  cascade is computed live meanwhile, 30 days in 7.5 s (0.27 s/day), 86 days in 33.4 s (3070 Ti machine, other agents
+  running), and selftest's `kessler prebake require=1` fails. `kessler fingerprint` at day 85.267 is identical across two launches
+  (events 7b5bafe1dbfd3ea4, pool 87aed1ab7d0c1257, roster 314b4b23ab7e69da). Cost on the storm night (old vs new build,
+  3 reps, 1600x900): orbit + flare + points +0.03 ms GPU, CPU +0.03 ms. Twelve stills ~1 s apart caught no more point
+  glints with the Fury than without (12 vs 18): a tumbling flat mirror's flash is brief and rare.
 - **The dust BANDS (2026-10-31, issue_20261030_175418 "Dust Clouds from kessler"; kesslerFillDust's ring pass):**
   past half an hour a breakup's dust has spread along its parent's orbit far past the point-like cloud the tube
   draws (the along-track sigma is `sv |4 sin(nt)/n - 3t|`: 2 900 km after 30 min for a 500 m/s kick, a whole orbit
