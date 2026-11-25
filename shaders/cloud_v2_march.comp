@@ -1355,8 +1355,14 @@ void main()
                 // Only on a ray from INSIDE the cloud (T, the transmittance within the cloud the ray is in, starts ~e^-20
                 // there, see Tent): from outside the eye sees the surface, whose light the march and the octaves were tuned
                 // on (applied to every sample it relit every shaded tower face and base, ~4 levels over a storm view).
+                // Not for RAIN below a base (f.rain > 0, f.hf <= 0: a shaft, the scud in it; 2026-11-24, issue_20261124_184831
+                // "Odd highlights on bottom storm clouds"): the rain is not the cloud, and its shadow is the deck's over it
+                // (Beer's law). With the eye in a shaft the rain carries the eye-inside entry (T ~e^-20, "RAIN IS NOT THE
+                // CLOUD" at Tent), and its own share, f.sigma x the column to the storm's top, reached the deck's whole tau
+                // wherever the rain was dense: those lumps took 1 / (1 + 0.11 tau) of the Sun, bright cauliflower patches
+                // with sharp edges on a dark base (the -DCV2_SUN_REF reference shows none).
                 float tOwn = min(f.sigma * max(f.topH - hS, 0.0) / max(dot(up, keyDir), 0.1), tauS)
-                           * smoothstep(14.0, 18.0, -log(max(T, 1e-30)));
+                           * smoothstep(14.0, 18.0, -log(max(T, 1e-30))) * ((f.rain > 0.0 && f.hf <= 0.0) ? 0.0 : 1.0);
                 // The diffused share carries the Sun's FLUX on the cloud's top (wave 20261122 c20, issue_20261122_214014):
                 // 1 / (1 + 0.11 tau) is the Eddington thick-slab transmission (2 + 3 mu0) / (4 + 3 (1 - g) tau), g = 0.85,
                 // at mu0 = 2/3, per unit normal flux; the flux into the top is mu0 times that. Without mu0 the rising Sun
