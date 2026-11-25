@@ -482,7 +482,8 @@ void SatelliteSim::updateLightningBolts()
         }
         else if (kind != 2)
             reveal = 150000.0f * std::max(ageD - kLeader + 0.03f, 0.0f);
-        F.m = glm::vec4(reveal, brMul, leader, 65535.0f);   // (w: no light volume yet; boltLightAssign)
+        F.m = glm::vec4(reveal, brMul, leader, 65535.0f);
+        F.b = glm::vec4(t.baseLocalZ, 0.0f, 0.0f, 0.0f);   // (w: no light volume yet; boltLightAssign)
         // Where the cloud glows: the origin, and where the channel leaves the cloud (a ground stroke) or the spreading
         // fronts of three arms (a spider: the light moves through the cloud with it).
         glm::vec4 em[4] = {glm::vec4(o, 1.0f), glm::vec4(0.0f), glm::vec4(0.0f), glm::vec4(0.0f)};
@@ -526,7 +527,9 @@ void SatelliteSim::updateLightningBolts()
         // The cloud composite cannot tell rain from cloud (4.8 / km of heavy rain is opaque within ~150 m), so such a
         // piece (bit 31) skips the composite's depth and is floored at the stroke's "through rain" level (lightning.frag).
         const float eyeZ = (float)glm::dot(eye - t.originEcef, t.up);
-        const float rainZ = t.baseLocalZ - kBoltRainBelowBaseM;
+        // (2026-11-24b: also a piece up to rainAboveM above the base; lightning.vert gates it on where the composite
+        // turned opaque: before the eye's ray reaches the base is rain, at or past it is the cloud.)
+        const float rainZ = t.baseLocalZ + std::max(boltColourTune.rainAboveM, -kBoltRainBelowBaseM);
         const uint32_t rainEye = (rainFloorOn && eyeZ < t.baseLocalZ) ? 0x80000000u : 0u;
         for (const GpuBoltSeg &s : t.draw)
         {

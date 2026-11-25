@@ -556,7 +556,17 @@ void main()
         if (vSeg.z < -0.5) {
             vec4 gd = textureGather(sceneDepthTex, uv, 0);
             if (min(min(gd.x, gd.y), min(gd.z, gd.w)) < vSeg.y * 0.99 - 30.0) discard;
-            visL = max(vis, bc.wet.w);
+            // A piece above the base (vScatK.w: where its ray reaches the base): floored only when everything the four
+            // texels have in front (transmittance under 0.9) starts short of the base, i.e. is the rain under it; a
+            // texel whose cloud starts at or past the base is the cloud itself, and the composite decides as before.
+            bool rainFront = true;
+            if (vScatK.w < 1e29) {
+                vec4 ga = textureGather(cloudTargetA, uv, 3), gt = textureGather(cloudTargetB, uv, 1);
+                for (int k = 0; k < 4; ++k)
+                    if (gt[k] < 0.9 && abs(ga[k]) < 5000.0 && !cloudAlphaIsEmit(ga[k]) && abs(ga[k]) * 1000.0 >= 0.85 * vScatK.w)
+                        rainFront = false;
+            }
+            if (rainFront) visL = max(vis, bc.wet.w);
         }
         x = (x + mix(gc, gw, clamp(bc.wet.x + bc.wet.y * (1.0 - vis), 0.0, 1.0))) * visL;
     }

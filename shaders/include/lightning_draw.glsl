@@ -17,6 +17,7 @@ struct BoltFlash {     // == GpuBoltFlash (SatelliteSim.h)
     vec4 m;            // x revealed arc (m), y the branches' share, z 1 during the stepped leader, w its emitters' light
                        // volumes: 4 bits each, emitter e in bits 4e .. 4e+3 (a slot of flash_volume.glsl, 15 = none)
     vec4 e[4];         // glow emitters: xyz (ENU about the eye), w weight
+    vec4 b;            // x the cloud's base (m, local z from the origin: the through-rain gate), yzw spare
 };
 struct BoltSeg { vec3 p0; float w; vec3 p1; uint packed; };
 layout(std430, set = 0, binding = 0) readonly buffer BoltFlashBuf { BoltFlash bFlash[]; };
