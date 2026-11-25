@@ -2529,6 +2529,18 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   (mean RGB of the view, 1600x900): issue 124812 at 4.3 km inside a tower 0.1/0.2/0.5 -> 98/98/100 (black/navy -> grey);
   171931 trail inside the tower top at 11 km under the shield 54/80/122 -> 68/93/133 (still blue: the Sun is behind the
   ANVIL there, another cloud, which keeps Beer's law; the sky light at "Sky light gain" 2 with its hue kept dominates).
+  NOT FOR RAIN BELOW A BASE (2026-11-24, issue_20261124_184831 "Odd highlights on bottom storm clouds", 12.58 N 102.30 E,
+  144 m, a day storm base seen from inside its rain): rain alone under a base (`f.rain > 0 && f.hf <= 0`, the shafts and the
+  scud in them) takes no own-cloud diffusion, the deck's shadow on it is Beer's law. With the eye in a shaft the rain keeps
+  the eye-inside entry ("RAIN IS NOT THE CLOUD" marks it, it does not reset it), so every rain sample passed the T < e^-14
+  gate, and its "own" share f.sigma x the column to the storm's top / mu reached the volume's whole tau wherever the rain was
+  dense: those lumps took 1 / (1 + 0.11 tau) of the Sun (0.13 at tau 60), sharp-edged grainy white cauliflower patches on a
+  dark base, the rain's density outline. Knockouts at shot 1: `-DCV2_SUN_REF` (brute-force Sun path, no diffusion) removes
+  them; `-DCV2_RAIN_LIT_OFF` most of them; ground bounce, faint path, `rain_amount 0` (no rain, another view) not the cause.
+  Splotch mask (pixels > 12 levels over the box's 30th percentile, 143k px) minus the base round it: +22.7 -> -4.7 levels
+  (reference -3.7; the reporter's shot +22.2). Shot 2 (good base) 0.63 levels vs a 0.63 A-A floor; a sunlit storm from the
+  side 2.37 vs 2.62, from 20 km above 0.35 vs 0.36. 128 registers; cloud march 15.84 -> 15.01 ms, GPU 21.57 -> 20.62 (shot 1,
+  1920x1009, interleaved x3, +-0.8: no cost). Evidence `qa/waves/20261124/evidence/c02/`.
   Applied to every sample the own-cloud diffusion relit every shaded tower face (~4 levels over a storm view): gated to
   inside rays. The trail's "pop" (frames 170 / 198-200, 14% of pixels) is the eye passing into and out of the tower's top
   at -6 min/s, not an anvil spawning. 255 registers before and after (binary 548352 -> 549248 B); cloud march (RTX 3070 Ti,

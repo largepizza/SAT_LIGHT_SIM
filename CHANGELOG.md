@@ -821,6 +821,9 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 - A lightning flash behind a mountain no longer draws a jagged, blocky edge where the lit clouds meet the ridge.
   The flash's light on the clouds was spread from a half-resolution image over the ridge line; it now stops at the
   ridge's own full-resolution outline.
+- Standing in the rain under a storm by day, the cloud base above no longer shows bright white cauliflower patches
+  (issue_20261124_184831). Dense patches of rain and scud under the base were lit as if they were the inside of the
+  storm cloud itself, soaking up its diffused sunlight; rain under a base is now shaded by the cloud over it.
 - A storm's underside is dark at sunrise and sunset, no longer lit flat orange (issue_20261122_214014). Seen from
   the rain under a storm, the clouds took the low Sun's light as if it soaked down through the cloud from its top at
   full strength. A Sun on the horizon puts very little light on a cloud's top, so that light is now scaled by how
