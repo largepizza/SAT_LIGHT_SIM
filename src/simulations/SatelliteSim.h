@@ -3207,6 +3207,7 @@ private:
     float kesslerAvoidance = 0.9f;    // kessler.avoidance: share of active-vs-debris encounters dodged
     float kesslerHorizonYears = 20.0f; // kessler.horizon_years: how far the cascade is simulated
     bool kesslerCollisionCloseup = true; // kessler.collision_closeup (no UI): pair collisions up close (stand-in, flash)
+    bool kesslerDustJets = true; // kessler.dust_jets (no UI): a collision's dust streams along its relative velocity (the A/B)
     // kessler.dust_rings (no UI, the A/B): the dust rings (kesslerDustRings) and the bands' hand-over to them; off = the
     // bands of 2026-10-31 alone (0.5-4 h)
     bool kesslerDustRingsOn = true;
@@ -3524,7 +3525,7 @@ private:
     void launchWaterDeposits(double t0, double t1, std::unordered_map<uint64_t, nlc::Deposit> &known);
     // The clouds drawn this frame (harness `kessler state` -> dust.clouds): event index, kind, dust kg, small
     // fragments, age (s), the rank's effective size sqrt(amp / priority) (km), its light (amp, before the sky units), cut fade.
-    std::vector<std::array<double, 8>> kDustDbg;
+    std::vector<std::array<double, 12>> kDustDbg; // (+ 8..11: the jet share, the axis ratios major/mid, major/minor, major vs vrel deg)
     // The dispersed dust BANDS drawn this frame (2026-10-31, issue_20261030_175418): their clumps, the widest band's
     // arc (deg of its orbit: 360 = a full ring) and width (km, its radial 2 sigma), and every drawn band's arc summed.
     uint32_t kRingPieces = 0;

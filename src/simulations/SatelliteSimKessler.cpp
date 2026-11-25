@@ -3404,6 +3404,7 @@ void SatelliteSim::kesslerFillDust(float pixelAngle)
         double dWant = 0.0; // the spacing it asks for (m)
         double nWant = 0.0; // pieces at that spacing (real-valued: the budget share must not step)
         double nMin = 0.0;  // the pieces it is guaranteed (kMinPieces, fewer for a cloud small on screen)
+        double nJet = 0.0;  // the pieces a young collision's streams take (below), reserved with nMin
     };
     auto cwParams = [](double nm, double tt, double &a, double &b) {
         const double nt = nm * tt;
@@ -3431,6 +3432,7 @@ void SatelliteSim::kesslerFillDust(float pixelAngle)
         p.dWant = std::max(p.dWant, std::min(3.0 * (double)pixelAngle * c.rNear, 7.0 * p.sy));
         p.nWant = 2.0 * 3.5 * p.sy / p.dWant + 1.0;
         p.nMin = std::min((double)kMinPieces, p.nWant);
+        p.nJet = kesslerDustJets && e.kind == kessler::EV_COLLISION && c.age < 1800.0 ? 14.0 : 0.0;
         return p;
     };
     // The budget: every cloud (by priority) gets at least its nMin pieces; what is left is shared out in proportion to
@@ -3442,13 +3444,13 @@ void SatelliteSim::kesslerFillDust(float pixelAngle)
     for (size_t q = 0; q < cands.size(); ++q)
     {
         const Plan pq = plan(cands[q]);
-        if (minSum + std::ceil(pq.nMin) > (double)dustMax)
+        if (minSum + std::ceil(pq.nMin) + pq.nJet > (double)dustMax)
         {
             priCut = cands[q].pri;
             break;
         }
         plans[q] = pq;
-        minSum += std::ceil(pq.nMin);
+        minSum += std::ceil(pq.nMin) + pq.nJet;
         extra += std::max(0.0, pq.nWant - pq.nMin);
         ++nFit;
     }
@@ -3499,15 +3501,124 @@ void SatelliteSim::kesslerFillDust(float pixelAngle)
             const double h1 = kessler::hash01(e.seed, (uint64_t)(int64_t)(fl + 1.0), 71);
             return 0.55 + 0.9 * (h0 + (h1 - h0) * s); // mean ~1
         };
+        // ── The collision's direction (2026-11-24, issue_20261124_193940 "Sat collision dust": "Dust explodes in a
+        // spherical shape ... modelling the direction and energy vector of the collision") ──
+        // A hypervelocity collision does not throw its dust out evenly: each body's material runs on along the
+        // relative velocity. Most of a collision's dust is drawn as STREAMS along it (the share jetK), the rest (the
+        // contact zone's vapour, at the centre of mass) as the tube above with the small fragments' isotropic kick.
+        //  - A catastrophic pair collision: the two parents' debris, as the engine moves its records and small
+        //    population (Kessler.cpp planFragments / planSmall): each side keeps a share beta of its velocity relative
+        //    to the centre of mass (beta = 1 - 0.8 u^1.5: mean 0.68, sd 0.24), the projectile's side forward at
+        //    beta mT / M vrel, the target's backward at beta mP / M vrel, each side's light its mass share (so the
+        //    dust's momentum is the centre of mass's).
+        //  - A cratering hit, or a grid hit (one of the small fragments; the engine keeps no direction: the one
+        //    kesslerCollPair hashes from the seed): the target's ejecta, a forward spray along the projectile's travel
+        //    (the debris cloud of a penetration runs on, as behind a Whipple shield) and a weaker back-spray toward it,
+        //    faster with the specific energy.
+        // The spread angle narrows with the specific energy (40 deg at 1/100 of the catastrophic 40 J/g, 15 deg at
+        // 100x it). Each stream is a chain of Gaussians along its speed distribution, every one placed by the
+        // Clohessy-Wiltshire map of its mean kick and covariance (exact for a Gaussian of kicks: CW is linear) and bent
+        // onto the arc as the tube's pieces are. The streams fade into the tube as they outgrow CW (their far end past
+        // 1500 -> 3000 km, and by 20 -> 30 min): the tube and the bands carry the cloud from there. Render only: the
+        // engine, its records and the cache are untouched (an explosion stays round: it has no direction).
+        struct Stream
+        {
+            double w, mean, sd, tanC;
+        };
+        Stream streams[2];
+        int nStreams = 0;
+        double jetK = 0.0;
+        glm::dvec3 uL(0.0); // the relative velocity's direction in (radial, along-track, normal)
+        if (kesslerDustJets && e.kind == kessler::EV_COLLISION)
+        {
+            KCollVis cv;
+            if (kesslerCollPair(c.ev, e, cv) && cv.vrel > 1.0 && glm::length(cv.vrelL) > 1e-6)
+            {
+                uL = cv.vrelL / glm::length(cv.vrelL);
+                const double Mt = cv.mT + cv.mP;
+                const double emr = 0.5 * std::min(cv.mT, cv.mP) * cv.vrel * cv.vrel / std::max(std::max(cv.mT, cv.mP), 1e-3); // J/kg (breakupCollision)
+                const double gE = std::clamp((std::log10(std::max(emr, 1.0) / 40000.0) + 2.0) / 4.0, 0.0, 1.0);
+                const double tanC = std::tan(glm::radians(glm::mix(40.0, 15.0, gE)));
+                if (e.catastrophic && !cv.grid && Mt > 0.0)
+                {
+                    const double vB = cv.mT / Mt * cv.vrel, vA = cv.mP / Mt * cv.vrel;
+                    streams[nStreams++] = {cv.mP / Mt, 0.68 * vB, 0.24 * vB, tanC};
+                    streams[nStreams++] = {cv.mT / Mt, -0.68 * vA, 0.24 * vA, tanC};
+                    jetK = 0.75;
+                }
+                else
+                {
+                    const double sF = (1.5 + 2.5 * gE) * sv, sB = (1.0 + 1.5 * gE) * sv;
+                    streams[nStreams++] = {0.45 / 0.65, sF, 0.4 * sF, tanC};
+                    streams[nStreams++] = {0.20 / 0.65, -sB, 0.4 * sB, tanC};
+                    jetK = 0.65;
+                }
+                double reach = 0.0;
+                for (int s = 0; s < nStreams; ++s)
+                    reach = std::max(reach, (std::abs(streams[s].mean) + 2.0 * streams[s].sd) * tA);
+                jetK *= (1.0 - glm::smoothstep(1500.0e3, 3000.0e3, reach)) *
+                        (1.0 - glm::smoothstep(1200.0, 1800.0, tA));
+            }
+        }
+        // The cloud's second moments (harness `kessler state` -> dust.clouds: axis ratios, the major axis vs vrel)
+        double momW = 0.0;
+        glm::dvec3 mom1(0.0);
+        glm::dmat3 mom2(0.0);
+        // One Gaussian into the list: centre (ECI), inverse covariance in ENU (xx, yy, zz, xy, xz, yz), the product of
+        // its three sigmas, its largest and smallest sigma (the view cone, the resolved blend), its light (amp x weight).
+        auto emitPiece = [&](const glm::dvec3 &ctr, const double *iE, double sProd, double sMax, double sMin,
+                             double ampW) {
+            const double rng = std::max(glm::length(ctr - eye), 1.0);
+            GpuDustCloud &d = out[n++];
+            const glm::dvec3 rel = toEnu(ctr - eye);
+            // The directions it can reach (4 sigma): one dot product skips it on every other pixel.
+            const double rad = 4.0 * sMax;
+            const double dist = glm::length(rel);
+            d.cone = dist > 1.05 * rad
+                         ? glm::vec4(glm::vec3(rel / dist), (float)std::sqrt(1.0 - (rad / dist) * (rad / dist)))
+                         : glm::vec4(0.0f);
+            // Resolved, its light is its SURFACE brightness (2026-10-30, issue 20261029_213225 shot 2: from 790 m a
+            // breakup's young cloud filled the view in flat grey-white). The light is in the point sources' units
+            // (toSky, ~10 mag over a surface's physical brightness: a cloud of magnitude m carries what a star of m
+            // shows), right for a piece a few pixels across and far too bright once it covers the screen; resolved it
+            // is pi x the radiance per unit solar irradiance (the sky's units: a sunlit white face is 1) x "Dust cloud
+            // brightness", geometric blend as the flames do (its smallest sigma 1.5 -> 8 half-res pixels). Distant
+            // pieces (a pixel or two) are unchanged.
+            double cwD = ampW * toSky;
+            {
+                const double sMinPx = sMin / std::max(rng * (double)pixelAngle, 1e-9);
+                const double resK = glm::smoothstep(1.5, 8.0, sMinPx);
+                if (resK > 0.0)
+                    cwD = ampW * std::exp(glm::mix(std::log(std::max(toSky, 1e-30)), std::log(glm::pi<double>()), resK));
+            }
+            d.c = glm::vec4(glm::vec3(rel), (float)cwD);
+            // The music's upwell: this piece's light at the eye as a magnitude (effectFlare = K amp / r^2: the
+            // Gaussian's density integrates to 1), lit only where its centre is out of the Earth's shadow.
+            const glm::dvec3 toC = ctr - eye;
+            const double bE = glm::dot(eye, toC / rng), cE = glm::dot(eye, eye) - satphot::kEarthRadiusM * satphot::kEarthRadiusM;
+            const double dE = bE * bE - cE;
+            const bool behindEarth = dE > 0.0 && (-bE - std::sqrt(dE)) > 0.0 && (-bE - std::sqrt(dE)) < rng;
+            if (!behindEarth && (glm::dot(ctr, sunDU) > 0.0 ||
+                                 glm::length(ctr - glm::dot(ctr, sunDU) * sunDU) > satphot::kEarthRadiusM))
+            {
+                const double fl = satphot::kFluxToFlare * (double)brightnessScale * ampW / (rng * rng);
+                if (fl > 1e-6)
+                    ambUpwellSource(3, rel, std::max(dist - 2.0 * sMax, 1.0), 6.0 - 2.5 * std::log10(fl / 0.008));
+            }
+            d.ia = glm::vec4((float)iE[0], (float)iE[1], (float)iE[2],
+                             (float)(1.0 / (std::pow(2.0 * glm::pi<double>(), 1.5) * sProd)));
+            d.ib = glm::vec4((float)iE[3], (float)iE[4], (float)iE[5], 0.0f);
+            d.col = glm::vec4(0.96f, 0.92f, 0.86f, 0.0f);
+        };
         double wsum = 0.0;
         for (int k = -K; k <= K; ++k)
         {
             const double y = k * D;
             wsum += std::exp(-0.5 * y * y / vPos);
         }
-        const double ampC = c.amp * cutK / std::max(wsum, 1e-30);
+        const double ampC = c.amp * cutK * (1.0 - jetK) / std::max(wsum, 1e-30);
         const double sMinA = 0.6 * (double)pixelAngle; // the half-res pixel, x the range
-        for (int k = -K; k <= K && n < dustMax; ++k)
+        for (int k = -K; k <= K && n < dustMax && jetK < 1.0; ++k)
         {
             const double y = k * D;
             double w = std::exp(-0.5 * y * y / vPos);
@@ -3530,47 +3641,146 @@ void SatelliteSim::kesslerFillDust(float pixelAngle)
             const glm::dvec3 a = toEnu(Rk), bq = toEnu(Sk), cw = toEnu(W);
             const double iR = 1.0 / (sR * sR), iS = 1.0 / (sS * sS), iW = 1.0 / (sW * sW);
             auto M = [&](int i, int j) { return iR * a[i] * a[j] + iS * bq[i] * bq[j] + iW * cw[i] * cw[j]; };
-            GpuDustCloud &d = out[n++];
-            const glm::dvec3 rel = toEnu(ctr - eye);
-            // The directions it can reach (4 sigma): one dot product skips it on every other pixel.
-            const double rad = 4.0 * std::max({sR, sS, sW});
-            const double dist = glm::length(rel);
-            d.cone = dist > 1.05 * rad
-                         ? glm::vec4(glm::vec3(rel / dist), (float)std::sqrt(1.0 - (rad / dist) * (rad / dist)))
-                         : glm::vec4(0.0f);
-            // Resolved, its light is its SURFACE brightness (2026-10-30, issue 20261029_213225 shot 2: from 790 m a
-            // breakup's young cloud filled the view in flat grey-white). The light is in the point sources' units
-            // (toSky, ~10 mag over a surface's physical brightness: a cloud of magnitude m carries what a star of m
-            // shows), right for a piece a few pixels across and far too bright once it covers the screen; resolved it
-            // is pi x the radiance per unit solar irradiance (the sky's units: a sunlit white face is 1) x "Dust cloud
-            // brightness", geometric blend as the flames do (its smallest sigma 1.5 -> 8 half-res pixels). Distant
-            // pieces (a pixel or two) are unchanged.
-            double cwD = ampC * w * toSky;
+            const double iE[6] = {M(0, 0), M(1, 1), M(2, 2), M(0, 1), M(0, 2), M(1, 2)};
+            emitPiece(ctr, iE, sR * sS * sW, std::max({sR, sS, sW}), std::min({sR, sS, sW}), ampC * w);
             {
-                const double sMinPx = std::min({sR, sS, sW}) / std::max(rng * (double)pixelAngle, 1e-9);
-                const double resK = glm::smoothstep(1.5, 8.0, sMinPx);
-                if (resK > 0.0)
-                    cwD = ampC * w * std::exp(glm::mix(std::log(std::max(toSky, 1e-30)), std::log(glm::pi<double>()), resK));
+                // (the moments: the physical sigmas, without the pixel floor)
+                const double pR2 = vx + floorW * floorW, pW2 = vz + floorW * floorW, pS2 = sp * sp;
+                const glm::dvec3 d0 = ctr - c.r;
+                const double aw = ampC * w;
+                momW += aw;
+                mom1 += aw * d0;
+                mom2 += aw * (glm::outerProduct(d0, d0) + pR2 * glm::outerProduct(Rk, Rk) +
+                              pS2 * glm::outerProduct(Sk, Sk) + pW2 * glm::outerProduct(W, W));
             }
-            d.c = glm::vec4(glm::vec3(rel), (float)cwD);
-            // The music's upwell: this piece's light at the eye as a magnitude (effectFlare = K amp / r^2: the
-            // Gaussian's density integrates to 1), lit only where its centre is out of the Earth's shadow.
-            const glm::dvec3 toC = ctr - eye;
-            const double bE = glm::dot(eye, toC / rng), cE = glm::dot(eye, eye) - satphot::kEarthRadiusM * satphot::kEarthRadiusM;
-            const double dE = bE * bE - cE;
-            const bool behindEarth = dE > 0.0 && (-bE - std::sqrt(dE)) > 0.0 && (-bE - std::sqrt(dE)) < rng;
-            if (!behindEarth && (glm::dot(ctr, sunDU) > 0.0 ||
-                                           glm::length(ctr - glm::dot(ctr, sunDU) * sunDU) > satphot::kEarthRadiusM))
+        }
+        // The streams (above): a chain of Gaussians along each one's speed distribution.
+        if (jetK > 0.0)
+        {
+            const double sn = std::sin(nM * tA), cs = std::cos(nM * tA);
+            glm::dmat3 Phi(0.0); // CW: position (radial, along, normal) = Phi x kick; glm is column-major: Phi[col][row]
+            Phi[0][0] = sn / nM;
+            Phi[1][0] = 2.0 * (1.0 - cs) / nM;
+            Phi[0][1] = 2.0 * (cs - 1.0) / nM;
+            Phi[1][1] = 4.0 * sn / nM - 3.0 * tA;
+            Phi[2][2] = sn / nM;
+            const glm::dmat3 uu = glm::outerProduct(uL, uL);
+            const glm::dmat3 I3(1.0);
+            constexpr int kJ = 7; // pieces a stream: centres at mean + z sd, z = -2.4 .. 2.4
+            double wz[kJ], wzs = 0.0;
+            for (int j = 0; j < kJ; ++j)
             {
-                const double fl = satphot::kFluxToFlare * (double)brightnessScale * ampC * w / (rng * rng);
-                if (fl > 1e-6)
-                    ambUpwellSource(3, rel, std::max(dist - 2.0 * std::max({sR, sS, sW}), 1.0),
-                                    6.0 - 2.5 * std::log10(fl / 0.008));
+                const double z = 0.8 * (j - kJ / 2);
+                wz[j] = std::exp(-0.5 * z * z / 0.64); // the centres' spread 0.8 sd, a piece's own 0.6 sd: the sum is sd
+                wzs += wz[j];
             }
-            d.ia = glm::vec4((float)M(0, 0), (float)M(1, 1), (float)M(2, 2),
-                             (float)(1.0 / (std::pow(2.0 * glm::pi<double>(), 1.5) * sR * sS * sW)));
-            d.ib = glm::vec4((float)M(0, 1), (float)M(0, 2), (float)M(1, 2), 0.0f);
-            d.col = glm::vec4(0.96f, 0.92f, 0.86f, 0.0f);
+            for (int s = 0; s < nStreams; ++s)
+            {
+                const Stream &st = streams[s];
+                const double sa = std::hypot(0.6 * st.sd, 0.3 * sv); // a piece's kick spread along the stream
+                for (int j = 0; j < kJ && n < dustMax; ++j)
+                {
+                    const double sj = st.mean + 0.8 * (j - kJ / 2) * st.sd;
+                    const double sPerp = std::hypot(std::abs(sj) * st.tanC, 0.3 * sv); // the cone, and the kicks' floor
+                    const glm::dmat3 Sig = sa * sa * uu + sPerp * sPerp * (I3 - uu);
+                    const glm::dvec3 m = Phi * (sj * uL);
+                    glm::dmat3 Cc = Phi * Sig * glm::transpose(Phi) + floorW * floorW * I3;
+                    // Bent onto the arc as the tube's pieces are (y is arc length on the cloud's orbit).
+                    const glm::dvec3 Rk = std::cos(m.y / rm) * R + std::sin(m.y / rm) * S0;
+                    const glm::dvec3 Sk = glm::cross(W, Rk);
+                    const glm::dvec3 ctr = (rm + m.x) * Rk + m.z * W;
+                    const double aw = c.amp * cutK * jetK * st.w * wz[j] / wzs;
+                    {
+                        const glm::dmat3 B(Rk, Sk, W); // columns: the local axes (ECI)
+                        const glm::dvec3 d0 = ctr - c.r;
+                        momW += aw;
+                        mom1 += aw * d0;
+                        mom2 += aw * (glm::outerProduct(d0, d0) + B * Cc * glm::transpose(B));
+                    }
+                    const double rng = std::max(glm::length(ctr - eye), 1.0);
+                    Cc += (sMinA * rng) * (sMinA * rng) * I3; // never narrower than a half-res pixel
+                    const double det = glm::determinant(Cc);
+                    if (!(det > 0.0))
+                        continue;
+                    const glm::dmat3 Ci = glm::inverse(Cc);
+                    const glm::dvec3 bE[3] = {toEnu(Rk), toEnu(Sk), toEnu(W)};
+                    auto M = [&](int i, int jj) {
+                        double v = 0.0;
+                        for (int k = 0; k < 3; ++k)
+                            for (int l = 0; l < 3; ++l)
+                                v += Ci[l][k] * bE[k][i] * bE[l][jj];
+                        return v;
+                    };
+                    const double iE[6] = {M(0, 0), M(1, 1), M(2, 2), M(0, 1), M(0, 2), M(1, 2)};
+                    const double tr = Cc[0][0] + Cc[1][1] + Cc[2][2]; // >= the largest eigenvalue (the view cone)
+                    const double maxDiagI = std::max({Ci[0][0], Ci[1][1], Ci[2][2]}); // <= 1 / the smallest
+                    emitPiece(ctr, iE, std::sqrt(det), std::sqrt(tr), 1.0 / std::sqrt(std::max(maxDiagI, 1e-300)), aw);
+                }
+            }
+        }
+        // The cloud's shape: the principal axes of its light's second moments (Jacobi), the major one against vrel.
+        double ax12 = 1.0, ax13 = 1.0, axDeg = -1.0;
+        if (momW > 0.0)
+        {
+            const glm::dvec3 mu = mom1 / momW;
+            double A[3][3], V[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+            for (int i = 0; i < 3; ++i)
+                for (int jj = 0; jj < 3; ++jj)
+                    A[i][jj] = mom2[jj][i] / momW - mu[i] * mu[jj];
+            for (int sweep = 0; sweep < 12; ++sweep)
+                for (int pq = 0; pq < 3; ++pq)
+                {
+                    const int pI = pq == 2 ? 1 : 0, qI = pq == 0 ? 1 : 2;
+                    if (std::abs(A[pI][qI]) <= 1e-12 * (std::abs(A[pI][pI]) + std::abs(A[qI][qI])))
+                        continue;
+                    const double th = 0.5 * std::atan2(2.0 * A[pI][qI], A[qI][qI] - A[pI][pI]);
+                    const double cth = std::cos(th), sth = std::sin(th);
+                    for (int k = 0; k < 3; ++k)
+                    {
+                        const double akp = A[k][pI], akq = A[k][qI];
+                        A[k][pI] = cth * akp - sth * akq;
+                        A[k][qI] = sth * akp + cth * akq;
+                    }
+                    for (int k = 0; k < 3; ++k)
+                    {
+                        const double apk = A[pI][k], aqk = A[qI][k];
+                        A[pI][k] = cth * apk - sth * aqk;
+                        A[qI][k] = sth * apk + cth * aqk;
+                    }
+                    for (int k = 0; k < 3; ++k)
+                    {
+                        const double vkp = V[k][pI], vkq = V[k][qI];
+                        V[k][pI] = cth * vkp - sth * vkq;
+                        V[k][qI] = sth * vkp + cth * vkq;
+                    }
+                }
+            int o[3] = {0, 1, 2};
+            std::sort(o, o + 3, [&](int x, int y) { return A[x][x] > A[y][y]; });
+            const double l1 = std::max(A[o[0]][o[0]], 1e-30), l2 = std::max(A[o[1]][o[1]], 1e-30),
+                         l3 = std::max(A[o[2]][o[2]], 1e-30);
+            ax12 = std::sqrt(l1 / l2);
+            ax13 = std::sqrt(l1 / l3);
+            // The direction to compare with: the relative velocity (a collision's), whether or not streams are drawn
+            glm::dvec3 uRef = uL;
+            if (glm::length(uRef) < 0.5 && e.kind == kessler::EV_COLLISION)
+            {
+                KCollVis cv;
+                if (kesslerCollPair(c.ev, e, cv) && glm::length(cv.vrelL) > 1e-6)
+                    uRef = cv.vrelL / glm::length(cv.vrelL);
+            }
+            if (glm::length(uRef) > 0.5)
+            {
+                const glm::dvec3 major(V[0][o[0]], V[1][o[0]], V[2][o[0]]);
+                const glm::dvec3 uE = uRef.x * R + uRef.y * S0 + uRef.z * W;
+                axDeg = glm::degrees(std::acos(std::min(std::abs(glm::dot(glm::normalize(major), uE)), 1.0)));
+            }
+        }
+        {
+            auto &dbg = kDustDbg.back();
+            dbg[8] = jetK;
+            dbg[9] = ax12;
+            dbg[10] = ax13;
+            dbg[11] = axDeg;
         }
     }
 
@@ -5016,7 +5226,9 @@ nlohmann::json SatelliteSim::kesslerStateJsonImpl(bool full) const
             {
                 const auto &a = kDustDbg[q];
                 cl.push_back({{"ev", (uint64_t)a[0]}, {"kind", (int)a[1]}, {"dust_kg", a[2]}, {"n_small", a[3]},
-                              {"age_s", a[4]}, {"eff_size_km", a[5]}, {"amp", a[6]}, {"cut", a[7]}});
+                              {"age_s", a[4]}, {"eff_size_km", a[5]}, {"amp", a[6]}, {"cut", a[7]},
+                              {"jet_share", a[8]}, {"axis_ratio_major_mid", a[9]}, {"axis_ratio_major_minor", a[10]},
+                              {"major_vs_vrel_deg", a[11]}});
             }
             j["dust"]["clouds"] = cl;
             j["dust"]["clouds_drawn"] = kDustDbg.size();

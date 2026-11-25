@@ -9971,6 +9971,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         kesslerHorizonYears = settingClamp(kj.value("horizon_years", kesslerHorizonYears), 1.0f, 200.0f);
         kesslerDustGain = settingClamp(kj.value("dust_gain", kesslerDustGain), 0.0f, 100000.0f);
         kesslerCollisionCloseup = kj.value("collision_closeup", kesslerCollisionCloseup);
+        kesslerDustJets = kj.value("dust_jets", kesslerDustJets);
         kesslerDustRingsOn = kj.value("dust_rings", kesslerDustRingsOn);
         kesslerDustRingGain = kj.value("dust_ring_gain", kesslerDustRingGain);
         kesslerSmallReGain = settingClamp(kj.value("small_reentry_gain", kesslerSmallReGain), 0.0f, 10000.0f);
@@ -11381,6 +11382,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
                     {"horizon_years", kesslerHorizonYears},
                     {"dust_gain", kesslerDustGain},
                     {"collision_closeup", kesslerCollisionCloseup},
+                    {"dust_jets", kesslerDustJets},
                     {"dust_rings", kesslerDustRingsOn},
                     {"dust_ring_gain", kesslerDustRingGain},
                     {"small_reentry_gain", kesslerSmallReGain},

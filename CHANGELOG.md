@@ -121,6 +121,9 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   reverb up close, a low-passed boom from the ground); and the debris, its dust and its small fragments carry the
   pair's momentum (a head-on hit sends the cloud along the impactor's path instead of leaving it with the
   formation).
+- **A collision's dust is no longer a round puff:** it streams out along the collision's relative velocity, each
+  body's debris running on its own way (the lighter impactor's side faster), in a cone that narrows the harder the
+  hit, with a smaller glowing core where they met. Explosions still burst evenly.
 - A satellite shattered by one of the small, untracked fragments now flashes and sounds up close too (it used to
   break up in silence: only collisions between two tracked objects had the flash and the hit).
 - **Explode** (Info window) breaks any satellite or debris piece up with one click, at any date; the debris is
