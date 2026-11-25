@@ -1456,15 +1456,16 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     30.8, dense_850km 46.2 -> 29.1, stA_850km 50.3 -> 24.9); a 90 deg/s pan keeps most of base's cost (brk_300km 25.3 ->
     23.4, ovc_300km 34.2 -> 28.8, stA_300km 30.7 -> 27.6, sunset_300km 31.7 -> 27.5); time warp started from a settled
     view keeps the block (brk_300km 27.0 -> 20.7, dense_300km 35.5 -> 24.7, stA_300km 39.6 -> 24.0).
-    **OPEN: the block in motion lights the frame's edge** (issue_20261124_195458 "Odd corner artifact", wave 20261124 c07):
-    climbing 10 -> 257 km at night, the bottom 6 rows and the right ~8 columns of the full-resolution cloud grid show a
-    bright orange band (sunlit cloud colour over black; the bottom rows 100-110 levels over the rows 10 px in, the
-    reporter's shot 94). Knockout: `sparse_block_orbit_moving` 0 -> exactly 0; sky TAA off and the orbit render scale
-    off change nothing. Suspect: the resolve's reconstruction of the block at the frame edge (the march places an edge
-    block's ray at min(q K + off, size - 1), the resolve calls a texel new only where c % K == off; 1009 rows = 252
-    blocks + 1). Rejecting the moved history reads within 1.5 texels of the frame edge only took the band from 109 to
-    81 levels: the history's clamp is a minor part, the edge's new-sample estimate the likelier source. Evidence
-    `qa/waves/20261124/evidence/c07/` (gitignored).
+    **The resolve's wide estimate stays inside the filled region** (2026-11-24, issue_20261124_195458 "Odd corner
+    artifact"): in motion (`mf` > 0) the [1 2 1] tent widens with four taps 1.5 samples out of `tqPos`, which is clamped
+    to [1, qs - 1]; the taps reached the row and column just past the quarter grid's `qs` samples. The new-sample
+    texture is the whole grid's size and at 4 x 4 those texels are never written, so they held samples from an older
+    view (a 2 x 2 stretch earlier in the flight): climbing 10 -> 257 km at night, the last 6 rows and ~8 columns showed a
+    bright orange band (bottom rows 100-110 levels over the rows 10 px in). Each tap is now clamped to [0.5, qs - 0.5].
+    Knockouts that named it: `sparse_block_orbit_moving` 0 -> 0.0; rejecting moved history reads near the edge only
+    109 -> 81. Measured (RTX 3070 Ti, 1920x1009, the report's trail at 30 fps, frames 200 / 280 / 330): edge excess 39.9 /
+    100.9 / 110.0 -> 0.0 on the bottom, 4.5 / 31.7 / 41.2 -> 0.0 on the right; cloud bucket in motion 22.69 -> 22.54 ms (3
+    interleaved reps, resolve only).
   - **THE ORBIT BLOCK'S GATE: the turn budget** (`clouds_v2.orbit_gate` 1; 0 = the gate of 2026-11-09 above, exactly;
     2026-11-22, issue_20261122_114811; SatelliteSimCloudsV2.cpp `fillCloudsV2Params`, "THE TURN BUDGET"; settings.json
     keys, no sliders; harness `state` -> `clouds_v2.orbit_gate`: `turn_px`, `debt_px`, `over`, `still_frames`, `still_s`,
@@ -2986,11 +2987,20 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   presets 160-640) is FILLED with the path's mean extinction and the cloud's mean colour, not left
   transparent (that was the horizon "seeing through" the clouds).
 - **OPEN: a one-frame white Earth from far orbit in time-lapse** (issue_20261124_190819, wave 20261124 c07): replaying
-  the report's trail (6395 km, 1 day/s) every night-side cloud renders pure white with black gaps on ONE frame of 240
-  (deterministic: the same frame each replay; mean luma 26.1 vs 9.7). Gone with `clouds_v2.lightning_light` 0, with the
-  march knocked out, or with the far layer off; back with the defaults. lightning.frag's per-pixel light is gated to
-  cloud within 5000 km, so the suspects are the bake frame (`recordFlashVolumes` binds `fvPipeLayout`'s set 1 between
-  the cloud passes, on frames with a new emitter only) or an emitter placed far from its storm at 1 day/s. Not fixed.
+  the report's trail (6395 km, 1 day/s, ~80 min of sim a frame) the night side's clouds render pure white with black gaps
+  on ONE frame of 240 (frame 201, 2037-03-14 06:25Z; mean luma 26.1 vs 9.7; the same frame every replay after a
+  `report load`). The cloud composite's own radiance is white there (debugview cloudrad). It is NOT lightning.frag (the
+  whole draw discarded: still there) nor the flash-volume bake (skipped: still there). Gone with `launches.enabled` false,
+  `launches.plume_bricks` false or `launches.plume_gain` 0 (Starship launches from Starbase Louisiana at 06:14-06:22Z,
+  at night); `engine_light_volume` 0 keeps it. `lightning_light` 0 and `lightning_rate` 0 also remove it, unexplained
+  (no shared path found: likely an indirect effect on the plume list / brick budget). A `path goto` to the same pose and
+  time does not show it: it needs the frame-to-frame 80-min step. Suspect: a plume brick built across a time-lapse
+  step (`launchFillVisuals` brick builder: `B.sun.w = alb / sw`, `B.misc.w = eRef / sw`; the composite takes the brick
+  as one more plume via bindings 27 / 28, header word 1 bit 31). Tried: no bricks while the sim step exceeds 10 s a frame
+  (the builder's slot test): frame 201 still 26.1, so the brick BUILD across the step is not it; the composite ignoring
+  the bricks' output (its bit-31 block off) keeps it too. So the many switches that remove it (launches, plume bricks,
+  plume gain, lightning light, lightning rate, the far layer, the march) do not share an obvious path: a fragile,
+  sequence-dependent state (a budget, an upload or a readback landing on that frame) is the likelier class. Not fixed.
 - **Lightning as LIGHT (2026-11-21, issue_20261121_163317; `include/flash_volume.glsl`, `cloud_v2_flashvol.comp`,
   `lightning.frag` boltLightAt, `SatelliteSim::boltLightAssign`).** A flash lights the cloud through the cloud around
   it, by the formula the march gives a cloud sample under a reflector beam (`beamFinish`): E (ph e^-od + ms D), with E the
