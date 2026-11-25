@@ -1566,6 +1566,41 @@ lists its sections and topics with line numbers. New notes go next to the sectio
   of 14, so nothing is drawn of any stroke and that is the rain. The flash's own light on the cloud behind a stroke
   also lifts the frame to 235-252 of 255 (glow 0.088), so a channel in front of it can add 13-37 levels at most.
   Scripts and the readout's decoder: `qa/waves/20261122/evidence/c23/scripts/` (`mk_strokes.py`, `px.py`, `decode8.py`).
+  **A stroke seen through rain alone (2026-11-24, issue_20261124_192804, wave c03).** The composite cannot tell rain
+  from cloud: heavy rain (4.8 / km) is opaque within ~150 m, so a ground stroke's trunk under the base, seen from under
+  the base, was hidden whole by the rain (shot 2: a stroke 18 km out drew 1,937 px). So the host marks a channel piece
+  (segment bit 31, SatelliteSimLightning.cpp at the upload) when its top end lies 200 m under the flash's base
+  (`baseLocalZ`, the lattice's probe at ~1 km steps) and the eye is under that base too: the straight line between them
+  then passes under the storm's cloud, through rain (and terrain) only. Such a quad skips the depth attachment (it holds
+  the opaque composite's distance) and lightning.frag tests the scene depth (terrain, sea, meshes, 1% + 30 m slack)
+  itself; its light is max(composite visibility, `boltColourTune.rainFloor` 0.35, BoltColour `wet.w`), the wet glow's
+  share still following the composite (so it reads neutral and soft, as through rain). Shot 2: peak channel luminance
+  (linear, over the frame without the channel) 0.30 -> 0.68, against 0.96 with nothing in front (knock=3); 1,937 ->
+  40,957 px drawn (43,323 with nothing in front). An eye above the base never marks a piece (the deck between still
+  hides the stroke, as before). Not covered: pieces at or above the base, e.g. shot 3's in-cloud flash (its horizontal
+  channel near the base 6 km out: along those rays the composite turns opaque 1.2-2.4 km from the eye, under the base,
+  and the march stops at T ~0.005, so the rain's and the cloud's shares are unknown); that needs the march to carry
+  the rain's optical depth apart from the cloud's (a change at the register cliff). Harness: `lightning color
+  rain_floor=` (0 = the composite alone, the A/B).
+  **Time-warp history (2026-11-24, same issue).** Above 30x (`SatelliteSim::kBoltHoldMinScale`) every flash the list
+  shows stays drawn for 0.3 s of wall time (`g_boltHoldS`; the wall time is the sim time added over the scale, so a
+  video export holds as long in the video) from when the list first showed it, as at its first return stroke (age
+  0.062 s for the draw; the record's own age still places the tree and its thunder), at 0.8 x (1 - (t / 0.3)^2); the
+  list's own intensity wins while it is higher. At 60x a stroke lives about a frame and at 300x most fall between
+  frames; over the reporter's storm (10 s of wall time, frames with a channel lit >= 0.05 within 60 km): 60x 86 of 412
+  -> 377 of 386, 300x 65 of 371 -> 354 of 355; 1x and 10x never hold. A held flash also lights the cloud (mode 1) but
+  not the march's own flash light, and makes no second thunder source or strike mark. Harness: `lightning hold s=`
+  (0 = none), `lightning stats` -> `frames_channel`, `frames_channel_held`.
+  **What lighting the terrain would take (2026-11-24, same issue; not built).** Today a flash lights only cloud
+  (lightning.frag mode 1: the glow by distance, or the flash light volumes, 16 slots); `bolt_ground.comp` only measures
+  the ground under a tree to fit it. The ground paths that exist: the engine lights' term in the same pass (mode 2: per
+  pixel from the half-res scene depth, albedo 0.15 x the cosine to the local up / (r^2 + r0^2), behind the composite's
+  transmittance and the air, no terrain shadow) and the beam light volume's ground (`bvGroundLight`, per box, cloud
+  shadowed, ~0.2 ms a bake, 4 boxes of ~17 MB). The cheapest version is the engine-light term for a flash's trunk
+  emitters (`F.e[2]`, `F.e[3]` at 40 / 80% down) in mode 1 for ground texels (~25 lines; mode 1 skips pixels with no
+  cloud in front today), estimated +0.05-0.15 ms while a flash is up, but unshadowed (a valley behind a ridge lit) and
+  not dimmed by the rain round the stroke, and its level against the cloud glow is a look call; the proper one is a
+  light-volume box per close ground stroke, sharing the beams' 4.
   **Thunder is streamed from sound shells (2026-10-10, `addThunderSource` / `thunderStep`,
   SatelliteSimAmbience.cpp):** each flash's channel is kept as a source (pieces in Earth-fixed axes, up to 96 flashes, 150 s);
   its front travels at 343 m/s in sim time, and a playhead per source (2026-11-21, sound.md "Thunder is played by a

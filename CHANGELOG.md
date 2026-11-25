@@ -292,6 +292,10 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   stroke under the base lights the base and the rain, and a flash behind a tower no longer lights the side you see.
   The light on the cloud is smooth (no faceted patches or starburst round a spider's fronts), and flying fast at a
   storm no longer shows a black disc at the screen centre during a flash.
+  A ground stroke seen from under the storm's base is no longer swallowed by the rain between you and it: through
+  rain the channel shows softened and paler, still hidden by terrain and by the cloud deck when you are above it.
+  With time running at 1 minute a second or faster, each bolt stays on screen for about a third of a second and
+  fades, so skimming through a thunderstorm shows its lightning instead of missing it between frames.
   Strokes have the colours of a photograph: a core that is white only where it is brightest, a violet sheath that
   makes branches and leaders purple, an indigo glow in the air around the channel, and far strokes warmed by the
   air between. "Lightning glow colour" (Settings > Weather > Lightning) runs from the earlier near-white stroke (0)
