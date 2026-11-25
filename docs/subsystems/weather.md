@@ -1577,11 +1577,21 @@ lists its sections and topics with line numbers. New notes go next to the sectio
   share still following the composite (so it reads neutral and soft, as through rain). Shot 2: peak channel luminance
   (linear, over the frame without the channel) 0.30 -> 0.68, against 0.96 with nothing in front (knock=3); 1,937 ->
   40,957 px drawn (43,323 with nothing in front). An eye above the base never marks a piece (the deck between still
-  hides the stroke, as before). Not covered: pieces at or above the base, e.g. shot 3's in-cloud flash (its horizontal
-  channel near the base 6 km out: along those rays the composite turns opaque 1.2-2.4 km from the eye, under the base,
-  and the march stops at T ~0.005, so the rain's and the cloud's shares are unknown); that needs the march to carry
-  the rain's optical depth apart from the cloud's (a change at the register cliff). Harness: `lightning color
-  rain_floor=` (0 = the composite alone, the A/B).
+  hides the stroke, as before). **At the base too (2026-11-24 round b, wave d3):** a piece up to `rainAboveM` (600 m,
+  `lightning color rain_above_m=`; -200 = round a's rule) ABOVE the base is marked as well, and gated per pixel:
+  lightning.vert sends the distance along the piece's ray where the ray reaches the base (`BoltFlash.b.x` = the base's
+  local z, the eye's from -dot(o, u); flat over the few km between; no gate for a piece 200 m under the base), and
+  lightning.frag floors it only when every one of the four composite texels with something in front (transmittance
+  < 0.9) has its distance (the opaque split, or the translucent mean) short of 0.85 x that distance: what is in front
+  is the rain under the base. A texel whose cloud starts at or past the base is the cloud itself and the composite
+  decides as before (no rain/cloud split exists past the opaque point: the march stops at T ~0.005, and keeping the
+  rain's depth apart would add a channel to the march's rg32f depth, the resolve's history and the composite).
+  Shot 3 (the in-cloud flash's horizontal channel near the base 6 km out; the composite opaque 1.2-2.4 km from the eye,
+  under the base): peak 0.084 -> 0.44 of 0.80 with nothing in front (55%; 1,078 -> 4,458 px; 1200 m: 0.47, 12,030
+  px); shot 2 unchanged (peak 0.68, 41,000 -> 45,800 px), shot 4 unchanged (0.85). From 7.5 km over the deck (eye above
+  the base: nothing marked) the flash under it stays hidden. Not told apart: low scud under the probe's base counts as
+  rain. GPU at shot 3 24.59 +- 0.07 -> 24.55 +- 0.10 ms (3 reps interleaved); the march untouched. Harness: `lightning
+  color rain_floor=` (0 = the composite alone, the A/B).
   **Time-warp history (2026-11-24, same issue).** Above 30x (`SatelliteSim::kBoltHoldMinScale`) every flash the list
   shows stays drawn for 0.3 s of wall time (`g_boltHoldS`; the wall time is the sim time added over the scale, so a
   video export holds as long in the video) from when the list first showed it, as at its first return stroke (age

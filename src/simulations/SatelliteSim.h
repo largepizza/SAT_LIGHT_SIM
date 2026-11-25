@@ -840,7 +840,7 @@ struct GpuBoltSeg   // 32 B: a channel piece in its flash's local frame (t1, t2,
     uint32_t packed;    // bits 0-6 flash slot, 7-8 order, 9-20 arc / the tree's longest arc, 21-30 f along its branch
 };
 static_assert(sizeof(GpuBoltSeg) == 32, "GpuBoltSeg layout");
-struct GpuBoltFlash   // 144 B, == BoltFlash in lightning.vert
+struct GpuBoltFlash   // 160 B, == BoltFlash in lightning_draw.glsl
 {
     glm::vec4 o;      // xyz the origin (this frame's ENU about the eye, m), w intensity now
     glm::vec4 u;      // xyz up at the flash (ENU), w age (s)
@@ -848,8 +848,9 @@ struct GpuBoltFlash   // 144 B, == BoltFlash in lightning.vert
     glm::vec4 t2;     // xyz the second tangent, w the tree's longest arc (m)
     glm::vec4 m;      // x revealed arc (m), y the branches' share now, z 1 during the stepped leader, w spare
     glm::vec4 e[4];   // the cloud-glow emitters: xyz (ENU about the eye), w weight
+    glm::vec4 b;      // x the cloud's base (m, local z from the origin: the through-rain gate), yzw spare
 };
-static_assert(sizeof(GpuBoltFlash) == 144, "GpuBoltFlash layout");
+static_assert(sizeof(GpuBoltFlash) == 160, "GpuBoltFlash layout");
 
 // ── Push constants for cloud_march.comp (half-res cloud compute pass, C15-perf) ──────────────
 // Matches the layout(push_constant) block in cloud_march.comp exactly. A separate struct from
@@ -10385,6 +10386,8 @@ private:
         float wetFloor = 0.0f;                  // the wet share anywhere (haze)
         float wetGain = 1.0f;                   // + this x the share of the stroke's light the rain / cloud in front takes
         float rainFloor = 0.35f;                // a piece seen through rain alone (both under the base): at least this x its light
+        float rainAboveM = 600.0f;              // ... also a piece up to this far ABOVE the base, where the composite turned
+                                                // opaque before the eye's ray reached the base (rain), not at or past it (cloud)
         glm::vec3 air{0.58f, 0.99f, 2.0f};      // the air's optical depth per channel over boltAir's grey one
         glm::vec3 cloud{0.68f, 0.64f, 1.0f};    // the flash's light on the cloud
     } boltColourTune;

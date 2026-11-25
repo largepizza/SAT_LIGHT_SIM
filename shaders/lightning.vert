@@ -149,6 +149,13 @@ void main()
     // attachment either, which holds the opaque composite's distance (heavy rain is opaque within ~150 m): the fragment
     // tests the scene depth (terrain, sea, meshes) itself.
     bool rainOnly = (s.packed & 0x80000000u) != 0u;
+    // A marked piece above the base (2026-11-24b): the distance along its ray where the ray reaches the base (flat over
+    // the few km between: the eye's and the piece's heights in the flash's frame). Opaque before it is rain, at or past it
+    // the cloud (lightning.frag). One 200 m under the base or lower: no gate (1e30).
+    float eyeZ  = -dot(F.o.xyz, F.u.xyz);
+    float pTopZ = max(s.p0.z, s.p1.z);
+    vScatK.w = (!rainOnly || pTopZ < F.b.x - 200.0) ? 1e30
+             : range * clamp((F.b.x - eyeZ) / max(0.5 * (s.p0.z + s.p1.z) - eyeZ, 1.0), 0.0, 1.0);
     gl_Position = vec4(px / scr * 2.0 - 1.0, ((int(bc.wet.z + 0.5) & 1) != 0 || rainOnly) ? 0.0 : sceneDepthFromDistance(range), 1.0);
     vLocal = vec2(u, w);
     vSeg   = vec4(Lpx, range, rainOnly ? -1.0 : 0.0, kind);
