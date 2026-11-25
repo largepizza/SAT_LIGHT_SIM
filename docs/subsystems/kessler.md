@@ -241,6 +241,38 @@ other agents). After the change the fingerprint above is also what Potato shows 
   at 3 h still bright): a cloud fades over the last 40% of its 3 h, and clouds near the budget's cut fade by
   priority between the cut and 3x it — never the first 60% of those kept. Harness `kessler state` -> `dust.clouds`
   (each drawn cloud's event, kind, dust kg, age, rank size, amp, cut fade).
+- **A collision's dust streams along its relative velocity (2026-11-24, issue_20261124_193940 "Sat collision dust":
+  "Dust explodes in a spherical shape"; kesslerFillDust, render only; setting `kessler.dust_jets`, no UI, default on =
+  the A/B):** the tube above is the cloud of ISOTROPIC kicks, which a collision's dust is not: each body's material runs
+  on along the relative velocity. For a collision whose pair `kesslerCollPair` can build (a pair, or a grid hit with
+  its seed-hashed direction), a share `jetK` of the cloud's light is drawn as two STREAMS along vrel and the tube keeps
+  the rest (the contact zone's vapour at the centre of mass, its isotropic kick capped at 0.25 vrel while the streams
+  are drawn, back to the breakup model's sv as they hand over: the model's sv is a hypervelocity one, and a 0.9-km/s
+  formation bump threw its core out at ~400 m/s, faster than its own streams, so the cloud stayed round). A catastrophic pair collision: the engine's own momentum
+  model (planFragments / planSmall): the projectile's side forward at beta mT / M vrel, the target's backward at beta mP
+  / M vrel (beta mean 0.68, sd 0.24), each side's light its mass share (the dust's momentum is the centre of mass's),
+  jetK 0.75. A cratering or grid hit: the target's ejecta, a forward spray (1.5 + 2.5 g) sv and a back-spray (1 + 1.5 g)
+  sv, light 0.45 / 0.20 of the cloud (jetK 0.65), g = the specific energy's place from 1/100 to 100x the catastrophic
+  40 J/g. The cone's half-angle narrows with g: 40 -> 15 deg for ejecta, 30 -> 10 deg for a parent's own stream. Each stream is 7 Gaussians along its speed
+  distribution (centres at mean +- 0.8 sd steps, own spread 0.6 sd), each placed by the Clohessy-Wiltshire map of its
+  mean kick and kick covariance (exact for Gaussian kicks: CW is linear) and bent onto the arc as the tube's pieces are;
+  the streams hand their light back to the tube as they outgrow CW (far end 1500 -> 3000 km, or age 20 -> 30 min). A
+  young collision's cloud reserves 14 list slots for them in the tube's budget. An explosion stays round (no
+  direction). The engine's records, small population and cache are untouched (no kCacheVersion bump, the shipped
+  prebake still matches). Harness `kessler state` -> `dust.clouds[]` `jet_share`, `axis_ratio_major_mid`,
+  `axis_ratio_major_minor` (the principal axes of the cloud's light, from its Gaussians' second moments without the
+  pixel floor) and `major_vs_vrel_deg`.
+  Measured on the report's collision (ev 367420: a catastrophic pair at 0.879 km/s, 302 km off, 2037-10-05 16:11:48 UTC):
+  ratio major / mid 1.02 at the shot (+25.7 s) and 1.016 at +60 s without the streams (major axis 86 deg from vrel); with
+  them 2.16 / 2.12 / 2.12 at +5 / +30 / +60 s, major axis 0.03-0.23 deg from vrel, bit-identical on a second pass (the
+  first cut without the core cap: 1.54). Cost there +0.43 ms GPU (22.98 +- 0.20 vs 22.55 +- 0.27, 3 reps, 1600x900;
+  the cloud bucket +0.30). From that eye the streams lie partly along the line of sight: two lobes more than a streak.
+- **Reflect Orbital mirrors under the Fury (2026-11-24, issue_20261124_194453):** a dead mirror aims at nothing
+  (sat_orbit.comp `usesSite` needs `!deadNow`; the census skips it too) and tumbles, so its glint is a brief point
+  flare. The storm kills ~1.9% of a 500-km SSO shell (`stormSeedEvents`), the cascade a little more: at day 85
+  (2037-10-08 09:24:33 UTC) the census counts 4810 of 5000 mirrors alive and 1358 beams vs 1408 with the scenario off
+  (-3.6%; Nuuk 344 vs 356). A Fury that disables most mirrors would be a scenario change (kill share by shell, a
+  kCacheVersion bump and a new prebake), not a targeting one.
 - **The dust BANDS (2026-10-31, issue_20261030_175418 "Dust Clouds from kessler"; kesslerFillDust's ring pass):**
   past half an hour a breakup's dust has spread along its parent's orbit far past the point-like cloud the tube
   draws (the along-track sigma is `sv |4 sin(nt)/n - 3t|`: 2 900 km after 30 min for a 500 m/s kick, a whole orbit
