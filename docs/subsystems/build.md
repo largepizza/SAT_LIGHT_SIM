@@ -105,7 +105,8 @@ committed absolute path to a portable CMake 3.31 was working around.
 
 The macOS CI job builds a **universal binary** (`CMAKE_OSX_ARCHITECTURES="arm64;x86_64"`) with
 `CMAKE_OSX_DEPLOYMENT_TARGET=11.0`. Both are required and they fix *different* failures:
-- **Architecture.** `macos-14` runners are Apple Silicon, so a default build is arm64-only and an
+- **Architecture.** `macos-15` runners (the pin since 2026-11-25; GitHub retired `macos-14`, and a job on a retired
+  image is cancelled before its first step with "The configuration ... is not supported") are Apple Silicon, so a default build is arm64-only and an
   Intel Mac rejects it with **"bad CPU type in executable"** — the kernel refusing to exec a Mach-O
   with no slice for the host, before any of this app's code runs. Universal is preferred over a
   second `macos-13` Intel runner job because GitHub is retiring those images, and it ships one
@@ -117,6 +118,11 @@ The macOS CI job builds a **universal binary** (`CMAKE_OSX_ARCHITECTURES="arm64;
 The workflow's `lipo -archs` step fails the build if either slice is missing from the exe **or from
 the bundled dylibs** — LunarG ships universal dylibs, but that is a property of their build, not
 something this workflow controls.
+
+**Apple's libc++ has no parallel algorithms**: `std::execution::par` does not exist there (the 2026-11-25
+macOS build failed on it in `Kessler.cpp`). Guard any parallel-policy call with `#if defined(__cpp_lib_parallel_algorithm)`
+and a serial fallback that gives the same result (the Kessler sort's keys are unique, so its order is). The macOS job is the
+only one that catches this: MSVC and libstdc++ both accept the policy.
 
 ### Old / low-end hardware floor
 
