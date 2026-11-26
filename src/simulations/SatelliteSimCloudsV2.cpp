@@ -485,37 +485,67 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
     // cloud sample and every sky pixel's god rays read. As plain HOST_VISIBLE memory it is the first such type, which on
     // NVIDIA is system RAM: each of those reads crossed PCIe behind the L2. Device-local + host-visible (the BAR heap, or
     // all of VRAM with Resizable BAR) keeps the mapping. SATLIGHTSIM_FLASH_HOSTMEM=1 forces the old placement (A/B).
+    // NO SUCH TYPE (2026-11-25, issues 20261125_171559 / _172129, GTX 970M on driver 441, Vulkan 1.1): it fell back to
+    // plain host memory, and Low ran at 1-2 fps with the cloud passes 76x the 3070 Ti's against 5-9x for everything
+    // else. Nothing needs the mapping (the host's writes are patches / fills, its reads the per-slot head copy below),
+    // so the fallback is plain device-local memory, zeroed by a fill; only the harness's `state sun_volume=1` readout
+    // (cv2FlashRealMapped) goes without. SATLIGHTSIM_FLASH_DEVONLY=1 forces that placement (to test it on a GPU that
+    // has the BAR type).
     {
         // TRANSFER: the CPU's few writes arrive as patches / fills, and the host reads a per-slot copy of its head.
         const VkBufferUsageFlags kFlashUsage =
             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-        const char *ev = std::getenv("SATLIGHTSIM_FLASH_HOSTMEM");
-        bool done = false;
-        if (!(ev && ev[0] == '1'))
+        const char *evHost = std::getenv("SATLIGHTSIM_FLASH_HOSTMEM");
+        const char *evDev  = std::getenv("SATLIGHTSIM_FLASH_DEVONLY");
+        const bool forceHost = evHost && evHost[0] == '1';
+        const bool forceDev  = evDev && evDev[0] == '1';
+        auto tryCreate = [&](VkMemoryPropertyFlags props) -> bool
         {
             try
             {
-                ctx.createBuffer(kCv2FlashBufBytes, kFlashUsage,
-                                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
-                                     | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                                 cv2FlashBuf, cv2FlashMem);
-                done = true;
+                ctx.createBuffer(kCv2FlashBufBytes, kFlashUsage, props, cv2FlashBuf, cv2FlashMem);
+                return true;
             }
             catch (const std::exception &)
             {
                 if (cv2FlashBuf) vkDestroyBuffer(dev, cv2FlashBuf, nullptr);
                 cv2FlashBuf = VK_NULL_HANDLE;
                 cv2FlashMem = VK_NULL_HANDLE;
+                return false;
             }
+        };
+        const char *where = nullptr;
+        bool mappable = true;
+        if (!forceHost && !forceDev
+            && tryCreate(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+                         | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))
+            where = "device-local host-visible memory";
+        else if (!forceHost && tryCreate(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))
+        {
+            where = "device-local memory (not mapped)";
+            mappable = false;
         }
-        if (!done)
+        else
+        {
             ctx.createBuffer(kCv2FlashBufBytes, kFlashUsage,
                              VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                              cv2FlashBuf, cv2FlashMem);
-        Log::line(std::string("clouds v2: flash buffer in ") + (done ? "device-local host-visible memory" : "host memory"));
+            where = "host memory";
+        }
+        Log::line(std::string("clouds v2: flash buffer in ") + where);
+        if (mappable)
+        {
+            vkMapMemory(dev, cv2FlashMem, 0, kCv2FlashBufBytes, 0, &cv2FlashRealMapped);
+            std::memset(cv2FlashRealMapped, 0, kCv2FlashBufBytes);
+        }
+        else
+        {
+            cv2FlashRealMapped = nullptr;
+            VkCommandBuffer cmd = ctx.beginOneTimeCommands();
+            vkCmdFillBuffer(cmd, cv2FlashBuf, 0, VK_WHOLE_SIZE, 0);
+            ctx.endOneTimeCommands(cmd);
+        }
     }
-    vkMapMemory(dev, cv2FlashMem, 0, kCv2FlashBufBytes, 0, &cv2FlashRealMapped);
-    std::memset(cv2FlashRealMapped, 0, kCv2FlashBufBytes);
     // Frames in flight (2026-10-25): what the host reads (the flash list, the rain map and light at the eye, the
     // tornado columns, the eval counters) is a per-slot copy of the buffer's head, made at the end of each frame
     // (recordFrameReadbacks): cv2FlashMapped is the slot's, the values of ctx.completedFrame(). The host writes go
@@ -1233,7 +1263,8 @@ void SatelliteSim::destroyCloudsV2(VkDevice device)
     cv2PassQuery = VK_NULL_HANDLE;
     if (cv2WxQuery) vkDestroyQueryPool(device, cv2WxQuery, nullptr);
     cv2WxQuery = VK_NULL_HANDLE;
-    if (cv2FlashMem) { vkUnmapMemory(device, cv2FlashMem); cv2FlashRealMapped = nullptr; }
+    if (cv2FlashMem && cv2FlashRealMapped) vkUnmapMemory(device, cv2FlashMem);
+    cv2FlashRealMapped = nullptr;
     if (ctx_)
         ctx_->slottedDestroy(&cv2FlashHeadBuf);
     cv2FlashMapped = nullptr;

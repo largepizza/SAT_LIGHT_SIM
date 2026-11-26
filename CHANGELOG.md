@@ -592,6 +592,10 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 ### Performance
 
+- **Clouds no longer crawl on older GPUs and drivers.** Where the driver offers no GPU memory the CPU can also
+  write to (seen on a GTX 970M with a 2019 driver), the clouds' Sun-shadow data fell back to system RAM, and every
+  lit cloud sample read it across PCIe: Low ran at 1-2 fps there. It now stays in GPU memory everywhere; on
+  machines that already had it there nothing changes.
 - **About 3 ms faster beside a venting Starship in orbit.** Up close, the vent's fan no longer draws the edge
   Gaussians that only matter from far away; the fan looks the same (Starmind deploy view 21.9 -> 19.1 ms).
 - **Faster from high orbit over the night side.** Picking which lightning flashes happen walked every storm region

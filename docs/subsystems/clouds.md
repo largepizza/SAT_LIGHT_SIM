@@ -1290,6 +1290,12 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     (terrain.md, "Rings round the nadir"). Land above sea level can still put a slice's far samples inside a hill.
   - **Flash buffer in device-local host-visible memory** (ON; `SATLIGHTSIM_FLASH_HOSTMEM=1` restores system RAM): the
     Sun shadow lattices were read across PCIe by every lit sample and sky pixel; sky -0.9..-2.3 ms.
+    Where no memory type is both (GTX 970M on driver 441 / Vulkan 1.1, issues 20261125_171559 / _172129: Low at 1-2 fps,
+    the cloud passes 76x the 3070 Ti's against 5-9x for the rest of the frame), the fallback is plain device-local memory
+    zeroed by `vkCmdFillBuffer`, never host memory: nothing maps it but `state sun_volume=1` (skipped there). The log
+    line names the placement (`device-local host-visible` / `device-local (not mapped)` / `host`). On the 3070 Ti
+    (typhoon view of _172129, Low, 1857x1057): cloud bucket 6.9-7.2 ms BAR, 6.5-6.7 device-only, 10.6-10.8 host;
+    the device-only frame is bit-identical. `SATLIGHTSIM_FLASH_DEVONLY=1` forces the fallback.
   - **Mie** (`tools/make_mie_lut.py` -> `assets/textures/cloud_mie.rgba16f`, march binding 24): `mie_phase` = the physical
     droplet phase (flatter clouds: ~20x less side scattering than the tuned HG pair, the MS term was tuned with the HG),
     `mie_optics` = the tuned phase x the table's structure (corona, cloudbow, glory), `droplet_reff_um`.
