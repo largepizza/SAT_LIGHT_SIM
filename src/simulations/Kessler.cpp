@@ -333,8 +333,13 @@ std::vector<EngineCollision> engineSample(const std::vector<EngineObject> &objs,
         keys[i] = {(x << 42) | (y << 21) | z, (uint32_t)i};
     }
     // Keys are unique (k, i): the order is the same however the sort runs, so it may run in parallel.
-    std::sort(std::execution::par, keys.begin(), keys.end(),
-              [](const Key &a, const Key &b) { return a.k != b.k ? a.k < b.k : a.i < b.i; });
+    // Apple's libc++ has no parallel algorithms (no std::execution::par): it sorts serially, same order.
+    const auto keyLess = [](const Key &a, const Key &b) { return a.k != b.k ? a.k < b.k : a.i < b.i; };
+#if defined(__cpp_lib_parallel_algorithm)
+    std::sort(std::execution::par, keys.begin(), keys.end(), keyLess);
+#else
+    std::sort(keys.begin(), keys.end(), keyLess);
+#endif
     const double V = p.cubeM * p.cubeM * p.cubeM;
     for (size_t s = 0; s < keys.size();)
     {
