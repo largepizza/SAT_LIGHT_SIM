@@ -172,6 +172,11 @@ target_link_libraries(SatLightSim PRIVATE Vulkan::Vulkan glfw glm::glm nlohmann_
 if(WIN32)
     target_link_libraries(SatLightSim PRIVATE mfplat mfreadwrite mfuuid ole32)
 endif()
+# The app icon (assets/icon.png, 16-256 px in app.ico): Explorer's file icon, and GLFW picks the GLFW_ICON
+# resource up for the window and the taskbar. Linux sets it at runtime from assets/icon.png (App::initWindow).
+if(WIN32)
+    target_sources(SatLightSim PRIVATE resources/windows/app.rc)
+endif()
 
 # SatModelTool (lighting overhaul Phase 3): loads, bakes, validates and OBJ-exports satellite
 # models from the command line — the same SatModel.cpp the app uses, no Vulkan, no window. The
@@ -452,6 +457,7 @@ if(SAT_BUILD_FRESH_TARGET)
     target_link_libraries(SatLightSimFresh PRIVATE Vulkan::Vulkan glfw glm::glm nlohmann_json::nlohmann_json Threads::Threads)
     if(WIN32)
         target_link_libraries(SatLightSimFresh PRIVATE mfplat mfreadwrite mfuuid ole32)
+        target_sources(SatLightSimFresh PRIVATE resources/windows/app.rc)
     endif()
     if(APPLE)
         target_link_libraries(SatLightSimFresh PRIVATE

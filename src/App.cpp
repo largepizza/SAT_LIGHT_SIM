@@ -19,6 +19,7 @@
 #include <thread>
 #include <vector>
 #include "stb_image_write.h" // boot-frame captures; the implementation lives in UIRenderer.cpp
+#include "stb_image.h"       // the window icon (Linux); the implementation lives in UIRenderer.cpp
 
 // SATLIGHTSIM_FRAME_TRACE=1 → print a per-phase CPU wall-clock breakdown of drawFrame() every
 // 60 frames. Pins down whether the frame is lost in vkWaitForFences (GPU busy), vkQueueSubmit
@@ -206,6 +207,21 @@ void App::initWindow()
             glfwMaximizeWindow(window); // (maximized on the monitor it was moved to)
         glfwShowWindow(window);
     }
+#if !defined(_WIN32) && !defined(__APPLE__)
+    // The app icon on Linux (X11). Windows takes it from the exe's GLFW_ICON resource (resources/windows/app.rc);
+    // Wayland has no window icons (the compositor uses the desktop entry) and macOS uses the bundle's, so neither
+    // calls glfwSetWindowIcon, which would only report GLFW_FEATURE_UNAVAILABLE there.
+    if (window && glfwGetPlatform() == GLFW_PLATFORM_X11)
+    {
+        int iw = 0, ih = 0, ich = 0;
+        if (stbi_uc *px = stbi_load("assets/icon.png", &iw, &ih, &ich, 4))
+        {
+            GLFWimage icon{iw, ih, px};
+            glfwSetWindowIcon(window, 1, &icon);
+            stbi_image_free(px);
+        }
+    }
+#endif
     glfwSetWindowUserPointer(window, this);
     glfwSetFramebufferSizeCallback(window, cbResize);
     glfwSetKeyCallback(window, cbKey);

@@ -1157,6 +1157,8 @@ The short version of everything below:
 
 ### Build / packaging
 
+- **An app icon.** The exe, the window and the taskbar show the SAT LIGHT SIM icon on Windows (embedded in the
+  exe), and the window does on Linux under X11 (`assets/icon.png`).
 - **macOS builds again.** The Kessler engine's parallel sort falls back to a serial sort where the standard
   library has no parallel algorithms (Apple's libc++), with the identical result; the release workflow's macOS
   job runs on `macos-15` (GitHub retired the `macos-14` image it was pinned to), and the bundle carries only the

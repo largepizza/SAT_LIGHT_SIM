@@ -1,0 +1,3 @@
+// The app icon (assets/icon.png at 16-256 px). GLFW looks for an icon resource named GLFW_ICON and uses it for
+// the window and the taskbar; Explorer shows the exe's first icon resource, which is this one.
+GLFW_ICON ICON "app.ico"
