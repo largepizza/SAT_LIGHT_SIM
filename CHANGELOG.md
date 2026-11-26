@@ -1159,7 +1159,8 @@ The short version of everything below:
 
 - **macOS builds again.** The Kessler engine's parallel sort falls back to a serial sort where the standard
   library has no parallel algorithms (Apple's libc++), with the identical result; the release workflow's macOS
-  job runs on `macos-15` (GitHub retired the `macos-14` image it was pinned to).
+  job runs on `macos-15` (GitHub retired the `macos-14` image it was pinned to), and the bundle carries only the
+  Vulkan loader and MoltenVK (the newer SDK's arm64-only KosmicKrisp driver broke the universal build).
 - **Linux builds again.** The Kessler cache reader seeks with a portable 64-bit `fseeko` off Windows (it used the
   MSVC-only `_fseeki64`).
 - The GitHub release page carries `RELEASE_NOTES.md` (the highlights) above the generated notes; this file is

@@ -101,6 +101,10 @@ if(DEFINED VULKAN_SDK_DIR AND NOT VULKAN_SDK_DIR STREQUAL "")
     # build machine's own $VULKAN_SDK.
     file(GLOB VK_DYLIBS "${VULKAN_SDK_DIR}/lib/libvulkan*.dylib"
                         "${VULKAN_SDK_DIR}/lib/libMoltenVK.dylib")
+    # Only the loader (libvulkan[.1[.x.y]].dylib) and MoltenVK: SDK 1.4.3xx also ships other drivers as
+    # libvulkan_<name>.dylib (KosmicKrisp, arm64-only, which failed the universal check on 2026-11-26).
+    # The launcher's ICD manifest names MoltenVK alone, so nothing would load them anyway.
+    list(FILTER VK_DYLIBS EXCLUDE REGEX "/libvulkan_[^/]*\\.dylib$")
     if(VK_DYLIBS STREQUAL "")
         message(FATAL_ERROR "PackageRelease.cmake: no libvulkan*/libMoltenVK dylibs under "
                             "${VULKAN_SDK_DIR}/lib")
