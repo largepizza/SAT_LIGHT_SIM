@@ -61,7 +61,10 @@ ivec2 gHalf, gQs;
 // resolve's 1.5 at 1920x1009, every pixel reading and converting 40 samples). The same samples and the same min / max:
 // the same result. Sparse rate only (rate 0: every full-resolution grid); the other rates keep the per-pixel loop.
 const uint kRingF = 27u;                // floats a record: mnW 4, mxW 4, rMnW 3, rMxW 3, dWide 1, cMn 3, cMx 3, rMnC 3, rMxC 3
-shared float sRing[256 * 27];
+// Three slots a block (parts 1-3's partials; part 0 keeps its own in registers and leaves the reduced record in the
+// first). Not four: the two arrays must fit Metal's 32 KB a threadgroup (MoltenVK, 2026-11-27: at 256 records the
+// resolve's 35.3 KB failed to compile on a 2015 MacBook's R9 M370X, "exceed the local data storage limit"). 28.4 KB.
+shared float sRing[64 * 3 * 27];
 // ... and its 3x3 box (the loop in main, the same arithmetic in the same order: one thread a block, the fourth of its four).
 const uint kBoxF = 30u;                 // mn 4, mx 4, m1 4, m2 4, ax 4, nBox, dNear, rMn 3, rMx 3, dW, dWs
 shared float sBox[64 * 30];
@@ -229,26 +232,26 @@ void main()
             for (int j = 0; j < 3; ++j) { sBox[ob + 22u + uint(j)] = rMnB[j]; sBox[ob + 25u + uint(j)] = rMxB[j]; }
             sBox[ob + 28u] = dWB; sBox[ob + 29u] = dWsB;
         }
-        uint o = lid * kRingF;
-        sRing[o +  0] = wMn.x;  sRing[o +  1] = wMn.y;  sRing[o +  2] = wMn.z;  sRing[o +  3] = wMn.w;
-        sRing[o +  4] = wMx.x;  sRing[o +  5] = wMx.y;  sRing[o +  6] = wMx.z;  sRing[o +  7] = wMx.w;
-        sRing[o +  8] = wRMn.x; sRing[o +  9] = wRMn.y; sRing[o + 10] = wRMn.z;
-        sRing[o + 11] = wRMx.x; sRing[o + 12] = wRMx.y; sRing[o + 13] = wRMx.z;
-        sRing[o + 14] = wD;
-        sRing[o + 15] = cMnS.x; sRing[o + 16] = cMnS.y; sRing[o + 17] = cMnS.z;
-        sRing[o + 18] = cMxS.x; sRing[o + 19] = cMxS.y; sRing[o + 20] = cMxS.z;
-        sRing[o + 21] = rMnS.x; sRing[o + 22] = rMnS.y; sRing[o + 23] = rMnS.z;
-        sRing[o + 24] = rMxS.x; sRing[o + 25] = rMxS.y; sRing[o + 26] = rMxS.z;
+        float rec[kRingF] = float[kRingF](wMn.x, wMn.y, wMn.z, wMn.w, wMx.x, wMx.y, wMx.z, wMx.w,
+                                          wRMn.x, wRMn.y, wRMn.z, wRMx.x, wRMx.y, wRMx.z, wD,
+                                          cMnS.x, cMnS.y, cMnS.z, cMxS.x, cMxS.y, cMxS.z,
+                                          rMnS.x, rMnS.y, rMnS.z, rMxS.x, rMxS.y, rMxS.z);
+        uint o = (blk * 3u + uint(max(part - 1, 0))) * kRingF;   // (part 0: the block's first slot, written below)
+        if (part != 0) {
+            [[unroll]] for (uint j = 0u; j < kRingF; ++j) sRing[o + j] = rec[j];
+        }
         barrier();
-        // Each block's 4 partial records into its first (the min fields take the min, the max fields the max).
+        // Each block's 4 partial records into its first (the min fields take the min, the max fields the max; part 0's own,
+        // then parts 1-3 in turn, as when all four were in shared memory).
         if (part == 0) {
-            for (uint q = 1u; q < 4u; ++q) {
+            for (uint q = 0u; q < 3u; ++q) {
                 uint p = o + q * kRingF;
-                for (uint j = 0u; j < kRingF; ++j) {
+                [[unroll]] for (uint j = 0u; j < kRingF; ++j) {
                     bool isMax = (j >= 4u && j < 8u) || (j >= 11u && j < 14u) || (j >= 18u && j < 21u) || j >= 24u;
-                    sRing[o + j] = isMax ? max(sRing[o + j], sRing[p + j]) : min(sRing[o + j], sRing[p + j]);
+                    rec[j] = isMax ? max(rec[j], sRing[p + j]) : min(rec[j], sRing[p + j]);
                 }
             }
+            [[unroll]] for (uint j = 0u; j < kRingF; ++j) sRing[o + j] = rec[j];
         }
         barrier();
     }
@@ -572,7 +575,7 @@ void main()
             // On the sparse grid the ring's boxes are the block's (shared, above); elsewhere the ring, per pixel.
             int rR = 3;
             if (sharedRing && !tFull && !cls) {
-                uint o = (((uint((c.y & 15) >> 1) << 3u) + uint((c.x & 15) >> 1)) << 2u) * kRingF;
+                uint o = (((uint((c.y & 15) >> 1) << 3u) + uint((c.x & 15) >> 1)) * 3u) * kRingF;
                 mnW  = min(mnW, vec4(sRing[o], sRing[o + 1], sRing[o + 2], sRing[o + 3]));
                 mxW  = max(mxW, vec4(sRing[o + 4], sRing[o + 5], sRing[o + 6], sRing[o + 7]));
                 rMnW = min(rMnW, vec3(sRing[o + 8], sRing[o + 9], sRing[o + 10]));

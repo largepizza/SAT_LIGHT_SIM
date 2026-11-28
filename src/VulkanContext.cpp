@@ -489,9 +489,10 @@ void VulkanContext::logDeviceLimits(const VkPhysicalDeviceLimits &lim)
     // cloud_march.comp / scene_depth.comp / flare_blur.comp all dispatch local_size 16x16 = 256
     // invocations. Guaranteed minimum is 128.
     constexpr uint32_t kNeededWorkgroupInvocations = 256;
-    // The largest workgroup shared block: env_probe_sh.comp's `vec3 part[64][9]` (6.9 KB packed, 9 KB if
-    // the driver pads vec3 to 16 bytes). cloud_march.comp's beam tile list is ~4.6 KB. Guaranteed minimum 16 KB.
-    constexpr uint32_t kNeededSharedMemory = 9 * 1024;
+    // The largest workgroup shared block: cloud_v2_resolve.comp's per-block ring and box records (sRing + sBox,
+    // 28,416 B). It must also stay under Metal's 32 KB a threadgroup: at 35.3 KB it failed to compile on MoltenVK
+    // (R9 M370X, 2026-11-27). Next: cloud_march.comp ~13 KB, cloud_v2_beamvol.comp 12 KB. Guaranteed minimum 16 KB.
+    constexpr uint32_t kNeededSharedMemory = 28416;
 
     {
         std::ostringstream oss;
@@ -518,7 +519,7 @@ void VulkanContext::logDeviceLimits(const VkPhysicalDeviceLimits &lim)
         {"3D texture size (aurora noise volume is 1024 wide)", kNeeded3D, lim.maxImageDimension3D},
         {"compute workgroup invocations (shaders use local_size 16x16)",
          kNeededWorkgroupInvocations, lim.maxComputeWorkGroupInvocations},
-        {"compute shared memory (env_probe_sh.comp's SH partial sums)",
+        {"compute shared memory (cloud_v2_resolve.comp's ring and box records)",
          kNeededSharedMemory, lim.maxComputeSharedMemorySize},
         // sat_sky.frag's descriptor set binds 16 combined image samplers in one stage — exactly the
         // guaranteed minimum 16, for both the sampled images and the samplers (terrain v2 P3's

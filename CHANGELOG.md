@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+
+- **macOS: v1.2.0 could stop at the loading screen** (seen on a 2015 MacBook Pro's AMD GPU: "clouds v2: failed to create pipeline
+  shaders/cloud_v2_resolve.comp.spv"). The cloud resolve pass asked for 35 KB of workgroup memory, more than
+  Metal's 32 KB, so it failed to compile under MoltenVK, in every quality preset including Potato. It now uses
+  28 KB and produces the same image.
+
 ## v1.2.0 — 2026-11-26
 
 The biggest update yet. The constellations now have a life cycle: rockets launch them, trains of new satellites
